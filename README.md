@@ -14,17 +14,19 @@ There are two layouts:
 
 All the ribbons share one timeline, from midnight to now, and they all use the same scale, so you can compare thicknesses directly. Hover over (or tap) the chart to see the breakdown for any 10-minute block.
 
-Tabs across the top (**All**, then one per source) switch to a detail view for a single source:
+Tabs across the top (**All**, then one per source) switch to a detail view for a single source, styled after the Predbat Card solar chart:
 
-- **Top:** the source's actual power, as a line with a fading fill.
-- **Optional forecast** (see `forecast` below): the plan as it stood at **00:00** (grey dashed line, read back from HA history) and the **latest plan** for the rest of the day (dashed, in the source's colour). This makes it easy to see how the day differed from the plan.
-- **Bottom:** hourly bars in kWh, coloured by destination. Solid bars are what happened. Dashed bars, after now, are the forecast split.
-- **Summary:** kWh so far, the plan up to now, and the plan for the whole day.
+- **Above the axis:** the **forecast** as a smooth line with a fading fill, and the **actual** as bars (average kW per 30 minutes). Earlier parts of the day are lightly shaded, and  is marked along with the forecast value at that moment.
+  - **Solar** uses a Solcast-style detailed forecast (, e.g. Predbat's ): the calibrated forecast, the 10–90% band, and the forecast *before calibration* as a dashed line.
+  - **Grid / Battery** use the **plan as it stood at 00:00** (read back from HA history), plus the **latest plan** for the rest of today as a dashed line.
+- **Below the axis:** the same bars mirrored downwards, split by **where the power went**, on the same kW scale. After now, dashed faded bars show the forecast split.
+- **Legend:** forecast total, actual vs forecast so far (%), what's left today, and what has gone to each destination so far.
 
 ### Forecast (Predbat)
 
 ```yaml
 forecast:
+  solar_detail: sensor.predbat_pv_today  # 30-min Solcast-style forecast (optional, solar tab)
   solar: predbat.pv_power_best        # kW plan in the "results" attribute
   grid: predbat.grid_power_best       # + import / - export
   battery: predbat.battery_power_best # + discharge / - charge
@@ -78,6 +80,8 @@ sources:
 | `tabs` | `true` | Shows the All and per-source tabs |
 | `forecast` | none | Plan entities (see above) |
 | `detail_height` | `300` | Chart height in px on the source tabs |
+| `period_minutes` | `30` | Bar period on the source tabs |
+| `actual_color` | `#2bb673` | Colour of the actual bars |
 | `sources[].color` | by role | Line colour on that source's tab |
 | `sources[].role` | from name | `solar`, `grid` or `battery`, to match the forecast |
 | `all_label` | `All` | Label for the overview tab |

@@ -13,7 +13,7 @@
  * MIT licence. https://github.com/spencermccarthy/power-ribbons-card
  */
 
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 
 const DEFAULT_COLOURS = {
   house: '#fb8c00',
@@ -154,10 +154,12 @@ class PowerRibbonsCard extends HTMLElement {
         .msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
                color: var(--prc-muted); font-size: 13px; text-align: center; }
         .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--prc-muted); }
-        .legend span { display: inline-flex; align-items: center; }
-        .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; background: var(--c); }
-        .legend i.line { height: 3px; border-radius: 2px; }
-        .legend i.dash { height: 0; width: 14px; border-top: 2px dashed var(--c); background: none; border-radius: 0; }
+        .legend span { display: inline-block; white-space: nowrap; }
+        .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; background: var(--c); vertical-align: -1px; }
+        .legend i.line { height: 3px; border-radius: 2px; vertical-align: 2px; }
+        .legend i.none { display: none; }
+        .legend b { color: var(--primary-text-color); font-weight: 600; }
+        .legend i.dash { height: 0; width: 14px; border-top: 2px dashed var(--c); background: none; border-radius: 0; vertical-align: 3px; }
         .tip { position: absolute; top: 4px; pointer-events: none; z-index: 2; display: none;
                background: var(--card-background-color, #fff); color: var(--primary-text-color);
                border: 1px solid var(--prc-line); border-radius: 10px; padding: 8px 11px; font-size: 12px;
@@ -229,35 +231,38 @@ class PowerRibbonsCard extends HTMLElement {
     const lg = this._legend;
     lg.innerHTML = '';
     const all = this._tab === 'all';
-    if (all) {
-      const intro = document.createElement('span');
-      intro.textContent = this._config.legend_text ?? 'Each colour is where that source’s power went; thickness = how much:';
-      if (intro.textContent) lg.appendChild(intro);
-    }
-    const chip = (cls, colour, text) => {
+    const chip = (cls, colour, html) => {
       const s = document.createElement('span');
       const i = document.createElement('i');
       if (cls) i.className = cls;
       i.style.setProperty('--c', colour);
-      s.append(i, document.createTextNode(text));
+      s.append(i);
+      s.insertAdjacentHTML('beforeend', html);
       lg.appendChild(s);
     };
-    const src = this._config.sources.find((s) => s.name === this._tab);
-    if (!all) {
-      const info = this._sourceInfo[src.name] || {};
-      chip('line', info.color, 'Actual');
-      if (this._config.forecast && info.role) {
-        chip('dash', 'var(--prc-muted)', 'Plan at 00:00');
-        chip('dash', info.color, 'Latest plan');
-      }
+    if (all) {
+      const intro = document.createElement('span');
+      intro.textContent = this._config.legend_text ?? 'Each colour is where that source’s power went; thickness = how much:';
+      if (intro.textContent) lg.appendChild(intro);
+      for (const k of Object.keys(this._destinations)) chip('', this._destinations[k].color, escapeHtml(this._destinations[k].name));
+      return;
     }
-    const keys = all ? Object.keys(this._destinations) : src.flows.map((f) => f.to);
-    for (const k of keys) chip('', this._destinations[k].color, this._destinations[k].name);
-    if (!all) {
-      const note = document.createElement('span');
-      note.textContent = this._config.forecast ? 'Bars: kWh per hour. Solid = actual, dashed = forecast' : 'Bars: kWh per hour';
-      lg.appendChild(note);
+    const s = this._source();
+    const m = s ? this._sourceModel(s) : null;
+    if (!m) return;
+    const k = (v) => `${v >= 10 ? v.toFixed(0) : v.toFixed(1)} kWh`;
+    const fc = m.fc;
+    if (fc && fc.kind === 'solar') {
+      chip('line', m.color, `Forecast <b>${k(fc.total)}</b>`);
+      if (fc.total10 !== null && fc.total90 !== null) chip('', `color-mix(in srgb, ${m.color} 35%, transparent)`, `10–90% <b>${k(fc.total10)}–${k(fc.total90)}</b>`);
+      if (fc.left !== null) chip('none', 'transparent', `Left today <b>${k(fc.left)}</b>${fc.left10 !== null && fc.left90 !== null ? ` (${fc.left10.toFixed(1)}–${fc.left90.toFixed(1)})` : ''}`);
+    } else if (fc) {
+      chip('line', m.color, `Plan at 00:00 <b>${k(fc.total)}</b>`);
     }
+    const pct = m.forecastSoFar > 0.05 ? ` (${Math.round((m.actualSoFar / m.forecastSoFar) * 100)}%)` : '';
+    chip('', m.actualColor, `Actual <b>${k(m.actualSoFar)}</b>${fc ? ` vs ${k(m.forecastSoFar)} ${fc.kind === 'solar' ? 'forecast' : 'planned'} so far${pct}` : ''}`);
+    if (fc && fc.kind === 'solar' && fc.raw !== null && fc.calibrated) chip('dash', 'var(--prc-muted)', `Before calibration ${k(fc.raw)}`);
+    if (fc && fc.kind === 'plan' && m.latestRest !== null) chip('dash', m.color, `Latest plan, rest of today <b>${k(m.latestRest)}</b>`);
   }
 
   _renderSummary() {
@@ -268,34 +273,22 @@ class PowerRibbonsCard extends HTMLElement {
     const kwh = (arr) => arr.reduce((a, v) => a + v, 0) * hours;
     const fmt = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1));
     if (this._tab === 'all') {
-      const parts = this._data.sources.map((s) => `${s.name} <b>${fmt(kwh(s.total))}</b>`);
+      const parts = this._data.sources.map((s) => `${escapeHtml(s.name)} <b>${fmt(kwh(s.total))}</b>`);
       el.innerHTML = `Today (kWh): ${parts.join(' · ')}`;
       return;
     }
     const s = this._source();
     if (!s) return;
     const head = document.createElement('span');
-    const role = this._sourceInfo[s.name]?.role;
-    let planTxt = '';
-    if (role && this._startPlan?.[role]) {
-      const d = this._data;
-      let plan = 0, planNow = 0;
-      for (let t = d.start; t < d.start + DAY; t += SLOT) {
-        const e = (this._supplyAt(this._startPlan, role, t + SLOT / 2) || 0) * (SLOT / HOUR);
-        plan += e;
-        if (t + SLOT <= d.end) planNow += e;
-      }
-      planTxt = ` · plan by now <b>${fmt(planNow)}</b> · plan for the day <b>${fmt(plan)}</b>`;
-    }
-    head.innerHTML = `${escapeHtml(s.name)} so far: <b>${fmt(kwh(s.total))} kWh</b>${planTxt}`;
+    head.textContent = 'Below the line, where it went so far (kWh):';
     el.appendChild(head);
     for (const l of s.layers) {
       const d = this._destinations[l.to];
-      const chip = document.createElement('span');
-      chip.className = 'chip';
-      chip.style.setProperty('--c', d.color);
-      chip.innerHTML = `<i></i>${escapeHtml(d.name)} <b>${fmt(kwh(l.values))}</b>`;
-      el.appendChild(chip);
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.style.setProperty('--c', d.color);
+      c.innerHTML = `<i></i>${escapeHtml(d.name)} <b>${fmt(kwh(l.values))}</b>`;
+      el.appendChild(c);
     }
   }
 
@@ -451,7 +444,7 @@ class PowerRibbonsCard extends HTMLElement {
     const W = this._plot.clientWidth;
     const all = this._tab === 'all';
     const H = all ? c.height : c.detail_height;
-    const padL = all ? c.label_width : 8, padR = all ? 8 : 40, padT = 6, axisH = 20;
+    const padL = all ? c.label_width : 40, padR = 8, padT = 6, axisH = 20;
     const d = this._data;
     const x = (t) => padL + ((t - d.start) / DAY) * (W - padL - padR);
     return { W, H, padL, padR, padT, axisH, x, bottom: H - axisH };
@@ -559,121 +552,225 @@ class PowerRibbonsCard extends HTMLElement {
     });
   }
 
-  // Detail view for one source: actual vs plan lines on top, hourly destination bars below.
+  // Detail model for one source, in fixed periods (default 30 min) across today.
   _sourceModel(s) {
     const d = this._data;
     const c = this._config;
+    const fcCfg = c.forecast || {};
     const info = this._sourceInfo[s.name] || {};
     const role = info.role;
-    const bin = c.bin_minutes * 60000;
-    const nbDay = Math.round(DAY / bin);
-    const dayTimes = Array.from({ length: nbDay }, (_, i) => d.start + i * bin + bin / 2);
-    const latest = c.forecast ? this._latestPlan() : null;
-    const startPlan = role && this._startPlan?.[role] ? this._startPlan : null;
-    const planLine = startPlan ? dayTimes.map((t) => this._supplyAt(startPlan, role, t)) : null;
-    const latestLine = role && latest?.[role]
-      ? [d.end, ...dayTimes.filter((t) => t > d.end)].map((t) => [t, this._supplyAt(latest, role, t)]).filter((p) => p[1] !== null)
-      : [];
+    const detailId = role === 'solar' ? fcCfg.solar_detail : null;
+    const detailSt = detailId ? this._hass?.states?.[detailId] : null;
+    const latestSt = role && fcCfg[role] ? this._hass?.states?.[fcCfg[role]] : null;
+    const key = [s.name, d.end, this._startPlanDay, detailSt?.last_updated, latestSt?.last_updated].join('|');
+    if (this._modelCache?.key === key) return this._modelCache.m;
 
-    // hourly kWh per destination: actual (bins so far) + forecast split (latest plan, rest of the hour/day)
-    const binH = c.bin_minutes / 60;
-    const hours = Array.from({ length: 24 }, (_, h) => ({ h, actual: {}, forecast: {}, hasForecast: false }));
-    for (const l of s.layers) {
-      l.values.forEach((v, i) => {
-        const h = Math.floor((i * c.bin_minutes) / 60);
-        if (h < 24) hours[h].actual[l.to] = (hours[h].actual[l.to] || 0) + v * binH;
-      });
-    }
-    if (role && latest && latest.solar && latest.grid && latest.battery) {
-      for (const hr of hours) {
-        const hEnd = d.start + (hr.h + 1) * HOUR;
-        let t = Math.max(d.start + hr.h * HOUR, d.end);
-        if (t >= hEnd) continue;
-        while (t < hEnd) {
-          const step = Math.min(SLOT, hEnd - t);
-          const sp = this._splitAt(latest, t + step / 2);
-          if (sp && sp[role]) {
-            hr.hasForecast = true;
-            for (const l of s.layers) hr.forecast[l.to] = (hr.forecast[l.to] || 0) + (sp[role][l.to] || 0) * (step / HOUR);
-          }
-          t += step;
-        }
+    const P = (c.period_minutes || 30) * 60000;
+    const bin = c.bin_minutes * 60000;
+    const n = Math.round(DAY / P);
+    const per = Array.from({ length: n }, (_, k) => ({ t: d.start + k * P, actual: null, dest: {}, fdest: {}, f: null, f10: null, f90: null, raw: null, latest: null }));
+
+    // actual: average kW over the elapsed part of each period
+    for (const p of per) {
+      const i0 = Math.floor((p.t - d.start) / bin), i1 = Math.min(d.times.length, Math.floor((p.t + P - d.start) / bin));
+      if (i1 <= i0) continue;
+      let sum = 0;
+      for (let i = i0; i < i1; i++) sum += s.total[i];
+      p.actual = sum / (i1 - i0);
+      for (const l of s.layers) {
+        let v = 0;
+        for (let i = i0; i < i1; i++) v += l.values[i];
+        p.dest[l.to] = v / (i1 - i0);
       }
     }
-    return { role, color: info.color, dayTimes, planLine, latestLine, hours };
+
+    // forecast for the whole day
+    let fc = null;
+    const num = (v) => { const x = parseFloat(v); return isFinite(x) ? x : null; };
+    if (detailSt) {
+      const a = detailSt.attributes || {};
+      let list = a.detailedForecast || a.detailed_forecast || [];
+      if (typeof list === 'string') { try { list = JSON.parse(list); } catch (e) { list = []; } }
+      const total = num(a.total ?? a.estimate), totalCL = num(a.totalCL), state = num(detailSt.state);
+      const calibrated = totalCL !== null && total !== null && Math.abs(totalCL - total) > 0.05;
+      for (const q of Array.isArray(list) ? list : []) {
+        const t = new Date(String(q.period_start).replace(/([+-]\d\d)(\d\d)$/, '$1:$2')).getTime();
+        const k = Math.round((t - d.start) / P);
+        if (k < 0 || k >= n || Math.abs(t - per[k].t) > P / 3) continue;
+        const v = num(q.pv_estimate), cl = num(q.pv_estimateCL);
+        per[k].f = calibrated && cl !== null ? cl : v;
+        per[k].raw = calibrated ? v : null;
+        per[k].f10 = num(q.pv_estimate10);
+        per[k].f90 = num(q.pv_estimate90);
+      }
+      fc = {
+        kind: 'solar', calibrated,
+        total: state ?? (calibrated ? totalCL : total), raw: total,
+        total10: num(a.total10 ?? a.estimate10), total90: num(a.total90 ?? a.estimate90),
+        left: num(calibrated ? a.remainingCL : a.remaining), left10: num(a.remaining10), left90: num(a.remaining90),
+      };
+    } else if (role && this._startPlan?.[role]) {
+      let total = 0;
+      for (const p of per) {
+        let sum = 0, cnt = 0;
+        for (let t = p.t; t < p.t + P; t += SLOT) { const v = this._supplyAt(this._startPlan, role, t + SLOT / 2); if (v !== null) { sum += v; cnt++; } }
+        p.f = cnt ? sum / cnt : null;
+        if (p.f !== null) total += p.f * (P / HOUR);
+      }
+      fc = { kind: 'plan', total };
+    }
+
+    // latest plan: rest of today, plus the forecast split by destination
+    const latest = c.forecast ? this._latestPlan() : null;
+    let latestRest = null;
+    const canSplit = role && latest && latest.solar && latest.grid && latest.battery;
+    for (const p of per) {
+      const from = Math.max(p.t, d.end), to = p.t + P;
+      if (from >= to) continue;
+      let sum = 0, cnt = 0;
+      const split = {};
+      let scnt = 0;
+      for (let t = from; t < to; t += SLOT) {
+        const mid = Math.min(to, t + SLOT / 2);
+        if (role && latest?.[role]) { const v = this._supplyAt(latest, role, mid); if (v !== null) { sum += v; cnt++; } }
+        if (canSplit) {
+          const sp = this._splitAt(latest, mid);
+          if (sp && sp[role]) { scnt++; for (const l of s.layers) split[l.to] = (split[l.to] || 0) + (sp[role][l.to] || 0); }
+        }
+      }
+      if (cnt) {
+        p.latest = sum / cnt;
+        if (fc?.kind === 'plan') latestRest = (latestRest || 0) + p.latest * ((to - from) / HOUR);
+      }
+      if (scnt) for (const l of s.layers) p.fdest[l.to] = (split[l.to] || 0) / scnt;
+    }
+
+    const hours = c.bin_minutes / 60;
+    const actualSoFar = s.total.reduce((a, v) => a + v, 0) * hours;
+    let forecastSoFar = 0;
+    for (const p of per) {
+      if (p.f === null) continue;
+      const overlap = Math.max(0, Math.min(p.t + P, d.end) - p.t);
+      forecastSoFar += p.f * (overlap / HOUR);
+    }
+    const m = { role, P, per, fc, latestRest, actualSoFar, forecastSoFar, color: info.color,
+      actualColor: c.actual_color || '#2bb673' };
+    this._modelCache = { key, m };
+    return m;
   }
 
   _drawSource(f, s) {
     if (!s) return;
     const d = this._data;
     const m = this._sourceModel(s);
-    this._srcModel = m;
-    const lineTop = f.padT, lineBottom = f.padT + (f.bottom - f.padT) * 0.6;
-    const barsTop = lineBottom + 18, barsBottom = f.bottom;
+    const svg = this._svg;
+    const per = m.per;
 
-    // ---- top: actual vs plan
-    let max = 0.5;
-    for (const v of s.total) if (v > max) max = v;
-    for (const v of m.planLine || []) if (v > max) max = v;
-    for (const p of m.latestLine) if (p[1] > max) max = p[1];
-    const top = niceCeil(max * 1.08);
-    const Y = (v) => lineBottom - (v / top) * (lineBottom - lineTop);
-    this._axisTicks(f, top, Y, 'kW');
+    let up = 0.5;
+    for (const p of per) for (const v of [p.actual, p.f, p.f90, p.raw, p.latest]) if (v !== null && v > up) up = v;
+    const upMax = niceCeil(up * 1.08);
+    let low = 0.25;
+    for (const p of per) {
+      const a = Object.values(p.dest).reduce((x, v) => x + v, 0) + Object.values(p.fdest).reduce((x, v) => x + v, 0);
+      if (a > low) low = a;
+    }
+    const lowMax = Math.max(low * 1.08, upMax * 0.25);
+    const px = (f.bottom - f.padT) / (upMax + lowMax);
+    const axisY = f.padT + upMax * px;
+    const Y = (v) => axisY - v * px;
+    const YD = (v) => axisY + v * px;
+    this._srcGeom = { Y, YD, axisY };
 
-    if (m.planLine) {
-      const pts = m.dayTimes.map((t, i) => [t, m.planLine[i]]).filter((p) => p[1] !== null);
-      if (pts.length > 1) {
-        el('path', { d: smoothPath(pts.map((p) => f.x(p[0])), pts.map((p) => Y(p[1]))), fill: 'none', stroke: 'var(--prc-muted)',
-          'stroke-width': 1.6, 'stroke-dasharray': '5 4', opacity: 0.85 }, this._svg);
+    // past shading
+    el('rect', { x: f.x(d.start), y: f.padT, width: Math.max(0, f.x(d.end) - f.x(d.start)), height: f.bottom - f.padT,
+      fill: 'var(--primary-text-color)', 'fill-opacity': 0.035 }, svg);
+
+    // upper ticks (left)
+    const niceSteps = [0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25, 50];
+    const ticks = [3, 4, 5, 6, 2].find((k) => niceSteps.some((st) => Math.abs(upMax / k - st) < 1e-9)) || 4;
+    for (let i = 0; i <= ticks; i++) {
+      const v = (upMax * i) / ticks;
+      const yy = Y(v);
+      if (i) el('line', { x1: f.padL, x2: f.W - f.padR, y1: yy, y2: yy, class: 'grid' }, svg);
+      const t = el('text', { x: f.padL - 6, y: yy + 4, 'text-anchor': 'end', class: 'axis' }, svg);
+      t.textContent = i === 0 ? '0 kW' : fmtNum(v);
+    }
+    // lower tick: same kW scale, mirrored
+    const lowTick = niceFloor(lowMax);
+    if (lowTick > 0) {
+      el('line', { x1: f.padL, x2: f.W - f.padR, y1: YD(lowTick), y2: YD(lowTick), class: 'grid', 'stroke-dasharray': '2 4' }, svg);
+      const t = el('text', { x: f.padL - 6, y: YD(lowTick) + 4, 'text-anchor': 'end', class: 'axis' }, svg);
+      t.textContent = fmtNum(lowTick);
+    }
+
+    const mid = (p) => f.x(p.t + m.P / 2);
+    const pw = f.x(d.start + m.P) - f.x(d.start);
+    const bw = Math.max(1.5, pw * 0.78);
+    const bx = (p) => f.x(p.t) + (pw - bw) / 2;
+
+    // 10-90% band
+    const band = per.filter((p) => p.f10 !== null && p.f90 !== null);
+    if (band.length > 1) {
+      const xs = band.map(mid);
+      el('path', { d: smoothPath(xs, band.map((p) => Y(p.f90))) + ' ' + smoothPath(xs.slice().reverse(), band.map((p) => Y(p.f10)).reverse(), true) + ' Z',
+        fill: m.color, 'fill-opacity': 0.18 }, svg);
+    }
+
+    // actual bars (up) and where it went (down)
+    for (const p of per) {
+      if (p.actual !== null && p.actual > 0.001) {
+        el('rect', { x: bx(p), y: Y(p.actual), width: bw, height: Math.max(0.5, axisY - Y(p.actual)), rx: 2, fill: m.actualColor, 'fill-opacity': 0.85 }, svg);
       }
-    }
-    const xs = [f.x(d.start), ...d.times.map(f.x), f.x(d.end)];
-    const ys = pad(s.total).map(Y);
-    const line = smoothPath(xs, ys);
-    el('path', { d: `${line} L ${xs[xs.length - 1].toFixed(1)} ${lineBottom} L ${xs[0].toFixed(1)} ${lineBottom} Z`,
-      fill: this._gradient(m.color, 'down', lineTop, lineBottom) }, this._svg);
-    el('path', { d: line, fill: 'none', stroke: m.color, 'stroke-width': 2.2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, this._svg);
-    if (m.latestLine.length > 1) {
-      el('path', { d: smoothPath(m.latestLine.map((p) => f.x(p[0])), m.latestLine.map((p) => Y(p[1]))), fill: 'none', stroke: m.color,
-        'stroke-width': 1.8, 'stroke-dasharray': '4 3' }, this._svg);
-    }
-
-    // ---- bottom: hourly kWh by destination
-    let bmax = 0.25;
-    for (const hr of m.hours) {
-      let sum = 0;
-      for (const l of s.layers) sum += (hr.actual[l.to] || 0) + (hr.forecast[l.to] || 0);
-      if (sum > bmax) bmax = sum;
-    }
-    const btop = niceCeil(bmax * 1.05);
-    const YB = (v) => barsBottom - (v / btop) * (barsBottom - barsTop);
-    el('line', { x1: f.padL, x2: f.W - f.padR, y1: barsBottom, y2: barsBottom, class: 'grid' }, this._svg);
-    el('line', { x1: f.padL, x2: f.W - f.padR, y1: barsTop, y2: barsTop, class: 'grid', 'stroke-dasharray': '2 4' }, this._svg);
-    const bt = el('text', { x: f.W - f.padR + 6, y: barsTop + 4, class: 'axis' }, this._svg);
-    bt.textContent = `${fmtNum(btop)} kWh`;
-    const hourW = f.x(d.start + HOUR) - f.x(d.start);
-    const bw = Math.max(2, hourW * 0.72);
-    for (const hr of m.hours) {
-      const bx = f.x(d.start + hr.h * HOUR) + (hourW - bw) / 2;
       let acc = 0;
       for (const l of s.layers) {
-        const v = hr.actual[l.to] || 0;
-        if (v <= 0) continue;
-        const y1 = YB(acc + v), y0 = YB(acc);
-        el('rect', { x: bx, y: y1, width: bw, height: Math.max(0, y0 - y1), rx: 1.5, fill: this._destinations[l.to].color, 'fill-opacity': 0.85 }, this._svg);
+        const v = p.dest[l.to] || 0;
+        if (v <= 0.001) continue;
+        el('rect', { x: bx(p), y: YD(acc), width: bw, height: Math.max(0.5, YD(acc + v) - YD(acc)), rx: 1.5, fill: this._destinations[l.to].color, 'fill-opacity': 0.85 }, svg);
         acc += v;
       }
       for (const l of s.layers) {
-        const v = hr.forecast[l.to] || 0;
+        const v = p.fdest[l.to] || 0;
         if (v <= 0.005) continue;
         const colour = this._destinations[l.to].color;
-        const y1 = YB(acc + v), y0 = YB(acc);
-        el('rect', { x: bx + 0.5, y: y1 + 0.5, width: bw - 1, height: Math.max(0, y0 - y1 - 1), rx: 1.5, fill: colour, 'fill-opacity': 0.22,
-          stroke: colour, 'stroke-width': 1, 'stroke-dasharray': '2 2' }, this._svg);
+        el('rect', { x: bx(p) + 0.5, y: YD(acc) + 0.5, width: Math.max(0.5, bw - 1), height: Math.max(0.5, YD(acc + v) - YD(acc) - 1), rx: 1.5,
+          fill: colour, 'fill-opacity': 0.2, stroke: colour, 'stroke-width': 1, 'stroke-dasharray': '2 2' }, svg);
         acc += v;
       }
     }
-    this._srcGeom = { Y, YB, lineBottom, barsTop };
+
+    // forecast line with fading fill
+    const fpts = per.filter((p) => p.f !== null);
+    if (fpts.length > 1) {
+      const xs = [f.x(d.start), ...fpts.map(mid), f.x(d.start + DAY)];
+      const ys = [Y(fpts[0].f), ...fpts.map((p) => Y(p.f)), Y(fpts[fpts.length - 1].f)];
+      const line = smoothPath(xs, ys);
+      el('path', { d: `${line} L ${xs[xs.length - 1].toFixed(1)} ${axisY} L ${xs[0].toFixed(1)} ${axisY} Z`,
+        fill: this._gradient(m.color, 'down', f.padT, axisY) }, svg);
+      el('path', { d: line, fill: 'none', stroke: m.color, 'stroke-width': 2.2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, svg);
+    }
+    // before calibration (solar) / latest plan (others)
+    const dashed = per.filter((p) => (m.fc?.kind === 'solar' ? p.raw : p.latest) !== null);
+    if (dashed.length > 1) {
+      const val = (p) => (m.fc?.kind === 'solar' ? p.raw : p.latest);
+      el('path', { d: smoothPath(dashed.map(mid), dashed.map((p) => Y(val(p)))), fill: 'none',
+        stroke: m.fc?.kind === 'solar' ? 'var(--primary-text-color)' : m.color, 'stroke-width': 1.4, 'stroke-dasharray': '4 3',
+        opacity: m.fc?.kind === 'solar' ? 0.7 : 0.95 }, svg);
+    }
+
+    // axis line
+    el('line', { x1: f.padL, x2: f.W - f.padR, y1: axisY, y2: axisY, stroke: 'var(--prc-muted)', 'stroke-width': 1, opacity: 0.6 }, svg);
+
+    // "Now" label and the forecast value at now
+    const nx = f.x(d.end);
+    const nl = el('text', { x: nx + 4, y: f.padT + 10, class: 'axis' }, svg);
+    nl.textContent = 'Now';
+    const cur = per[Math.min(per.length - 1, Math.floor((d.end - d.start) / m.P))];
+    const curV = cur ? (cur.latest ?? cur.f) : null;
+    if (curV !== null && curV !== undefined) {
+      el('circle', { cx: nx, cy: Y(curV), r: 3.5, fill: 'var(--card-background-color, #fff)', stroke: m.color, 'stroke-width': 2 }, svg);
+      const vl = el('text', { x: nx, y: Y(curV) - 8, 'text-anchor': 'middle', class: 'axis', style: 'font-weight:700; fill: var(--primary-text-color)' }, svg);
+      vl.textContent = `${curV.toFixed(1)} kW`;
+    }
   }
 
   _axisTicks(f, top, Y, unit) {
@@ -699,66 +796,59 @@ class PowerRibbonsCard extends HTMLElement {
     const t = d.start + ((px - f.padL) / (f.W - f.padL - f.padR)) * DAY;
     const all = this._tab === 'all';
     if (t < d.start || t > (all ? d.end : d.start + DAY)) { this._hideHover(); return; }
-    const bin = this._config.bin_minutes * 60000;
     const kw = (v) => `${v >= 10 ? v.toFixed(0) : v.toFixed(2)} kW`;
-    const kwhF = (v) => `${v >= 10 ? v.toFixed(0) : v.toFixed(2)} kWh`;
     const hm = (ms) => { const dt = new Date(ms); return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`; };
-    const dayIdx = Math.min(Math.round(DAY / bin) - 1, Math.max(0, Math.floor((t - d.start) / bin)));
-    const past = dayIdx < d.times.length && d.start + dayIdx * bin < d.end;
-    const xx = past ? f.x(d.times[dayIdx]) : f.x(d.start + dayIdx * bin + bin / 2);
-    this._hoverLine.setAttribute('x1', xx);
-    this._hoverLine.setAttribute('x2', xx);
-    this._hoverLine.setAttribute('opacity', 0.35);
     this._hoverDots.innerHTML = '';
-    const dot = (cy, colour) => el('circle', { cx: xx, cy, r: 3.5, fill: 'var(--card-background-color, #fff)', stroke: colour, 'stroke-width': 2 }, this._hoverDots);
-
-    const binStart = d.start + dayIdx * bin;
-    const rows = [`<b>${hm(binStart)}–${hm(Math.min(past ? d.end : Infinity, binStart + bin))}</b>`];
+    let xx;
+    const rows = [];
 
     if (all) {
+      const bin = this._config.bin_minutes * 60000;
+      const idx = Math.min(d.times.length - 1, Math.max(0, Math.floor((t - d.start) / bin)));
+      xx = f.x(d.times[idx]);
+      const bs = d.start + idx * bin;
+      rows.push(`<b>${hm(bs)}–${hm(Math.min(d.end, bs + bin))}</b>`);
       for (const s of d.sources) {
-        if (s.total[dayIdx] < 0.05) continue;
-        rows.push(`<div class="sep"></div><div class="row"><span>${escapeHtml(s.name)}</span><b>${kw(s.total[dayIdx])}</b></div>`);
+        if (s.total[idx] < 0.05) continue;
+        rows.push(`<div class="sep"></div><div class="row"><span>${escapeHtml(s.name)}</span><b>${kw(s.total[idx])}</b></div>`);
         for (const l of s.layers) {
-          if (l.values[dayIdx] < 0.05) continue;
+          if (l.values[idx] < 0.05) continue;
           const dd = this._destinations[l.to];
-          rows.push(`<div class="row sub"><span><i style="--c:${dd.color}"></i>${escapeHtml(dd.name)}</span><span>${kw(l.values[dayIdx])}</span></div>`);
+          rows.push(`<div class="row sub"><span><i style="--c:${dd.color}"></i>${escapeHtml(dd.name)}</span><span>${kw(l.values[idx])}</span></div>`);
         }
       }
       if (rows.length === 1) rows.push('<div class="row sub"><span>No flow</span></div>');
     } else {
       const s = this._source();
-      const m = this._srcModel;
+      if (!s) return;
+      const m = this._sourceModel(s);
       const g = this._srcGeom;
-      if (s && m && g) {
-        if (past) {
-          rows.push(`<div class="row"><span><i style="--c:${m.color}"></i>Actual</span><b>${kw(s.total[dayIdx])}</b></div>`);
-          dot(g.Y(s.total[dayIdx]), m.color);
-        }
-        const pv = m.planLine ? m.planLine[dayIdx] : null;
-        if (pv !== null && pv !== undefined) {
-          rows.push(`<div class="row sub"><span>Plan at 00:00</span><span>${kw(pv)}</span></div>`);
-          dot(g.Y(pv), 'var(--prc-muted)');
-        }
-        if (!past && m.role) {
-          const lv = this._supplyAt(this._latestPlan(), m.role, binStart + bin / 2);
-          if (lv !== null) { rows.push(`<div class="row"><span><i style="--c:${m.color}"></i>Latest plan</span><b>${kw(lv)}</b></div>`); dot(g.Y(lv), m.color); }
-        }
-        const h = Math.floor((t - d.start) / HOUR);
-        const hr = m.hours[h];
-        if (hr) {
-          const hasA = s.layers.some((l) => (hr.actual[l.to] || 0) > 0.005);
-          const hasF = s.layers.some((l) => (hr.forecast[l.to] || 0) > 0.005);
-          const label = hasA && hasF ? 'actual + forecast' : hasF ? 'forecast' : 'actual';
-          rows.push(`<div class="sep"></div><div class="row"><span>${hm(d.start + h * HOUR)}–${hm(d.start + (h + 1) * HOUR)} (${label})</span></div>`);
-          for (const l of s.layers) {
-            const v = (hr.actual[l.to] || 0) + (hr.forecast[l.to] || 0);
-            const dd = this._destinations[l.to];
-            rows.push(`<div class="row sub"><span><i style="--c:${dd.color}"></i>${escapeHtml(dd.name)}</span><span>${kwhF(v)}</span></div>`);
-          }
+      const k = Math.min(m.per.length - 1, Math.max(0, Math.floor((t - d.start) / m.P)));
+      const p = m.per[k];
+      xx = f.x(p.t + m.P / 2);
+      rows.push(`<b>${hm(p.t)}–${hm(p.t + m.P)}</b>`);
+      const solar = m.fc?.kind === 'solar';
+      if (p.f !== null) {
+        rows.push(`<div class="row"><span><i style="--c:${m.color}"></i>${solar ? 'Forecast' : 'Plan at 00:00'}</span><b>${kw(p.f)}</b></div>`);
+        if (g) el('circle', { cx: xx, cy: g.Y(p.f), r: 3.5, fill: 'var(--card-background-color, #fff)', stroke: m.color, 'stroke-width': 2 }, this._hoverDots);
+      }
+      if (p.f10 !== null && p.f90 !== null) rows.push(`<div class="row sub"><span>10–90%</span><span>${p.f10.toFixed(2)}–${kw(p.f90)}</span></div>`);
+      if (solar && p.raw !== null) rows.push(`<div class="row sub"><span>Before calibration</span><span>${kw(p.raw)}</span></div>`);
+      if (!solar && p.latest !== null) rows.push(`<div class="row sub"><span>Latest plan</span><span>${kw(p.latest)}</span></div>`);
+      if (p.actual !== null) rows.push(`<div class="row"><span><i style="--c:${m.actualColor}"></i>Actual${p.t + m.P > d.end ? ' so far' : ''}</span><b>${kw(p.actual)}</b></div>`);
+      const hasA = Object.keys(p.dest).length > 0, hasF = Object.values(p.fdest).some((v) => v > 0.005);
+      if (hasA || hasF) {
+        rows.push(`<div class="sep"></div><div class="row"><span>Went to (${hasA && hasF ? 'actual + forecast' : hasF ? 'forecast' : 'actual'})</span></div>`);
+        for (const l of s.layers) {
+          const dd = this._destinations[l.to];
+          const v = (p.dest[l.to] || 0) + (p.fdest[l.to] || 0);
+          rows.push(`<div class="row sub"><span><i style="--c:${dd.color}"></i>${escapeHtml(dd.name)}</span><span>${kw(v)}</span></div>`);
         }
       }
     }
+    this._hoverLine.setAttribute('x1', xx);
+    this._hoverLine.setAttribute('x2', xx);
+    this._hoverLine.setAttribute('opacity', 0.35);
     const tip = this._tip;
     tip.innerHTML = rows.join('');
     tip.style.display = 'block';
@@ -805,6 +895,13 @@ function stepAt(pts, t) {
     if (pts[mid][0] <= t) lo = mid; else hi = mid - 1;
   }
   return pts[lo][1];
+}
+
+function niceFloor(v) {
+  const steps = [0.25, 0.5, 1, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50];
+  let best = 0;
+  for (const st of steps) if (st <= v) best = st;
+  return best;
 }
 
 function pad(arr) {
