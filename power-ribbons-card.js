@@ -13,7 +13,7 @@
  * MIT licence. https://github.com/spencermccarthy/power-ribbons-card
  */
 
-const VERSION = '0.5.4';
+const VERSION = '0.5.5';
 
 const DEFAULT_COLOURS = {
   house: '#fb8c00',
@@ -264,10 +264,10 @@ class PowerRibbonsCard extends HTMLElement {
       if (fc.total10 !== null && fc.total90 !== null) chip('', `color-mix(in srgb, ${m.color} 35%, transparent)`, `10–90% <b>${k(fc.total10)}–${k(fc.total90)}</b>`);
       if (fc.left !== null) chip('none', 'transparent', `Left today <b>${k(fc.left)}</b>${fc.left10 !== null && fc.left90 !== null ? ` (${fc.left10.toFixed(1)}–${fc.left90.toFixed(1)})` : ''}`);
     } else if (fc) {
-      chip('line', m.color, `Plan at 00:00 <b>${k(fc.total)}</b>`);
+      chip('line', m.color, `Start-of-day estimate <b>${k(fc.total)}</b>`);
     }
     const pct = m.forecastSoFar > 0.05 ? ` (${Math.round((m.actualSoFar / m.forecastSoFar) * 100)}%)` : '';
-    chip('', m.actualColor, `Actual <b>${k(m.actualSoFar)}</b>${fc ? ` vs ${k(m.forecastSoFar)} ${fc.kind === 'solar' ? 'forecast' : 'planned'} so far${pct}` : ''}`);
+    chip('', m.actualColor, `Actual <b>${k(m.actualSoFar)}</b>${fc ? ` vs ${k(m.forecastSoFar)} ${fc.kind === 'solar' ? 'forecast' : 'estimated'} so far${pct}` : ''}`);
     if (fc && fc.kind === 'solar' && fc.raw !== null && fc.calibrated) chip('dash', 'var(--prc-muted)', `Before calibration ${k(fc.raw)}`);
     if (fc && fc.kind === 'plan' && m.latestRest !== null) chip('dash', m.color, `Latest plan, rest of today <b>${k(m.latestRest)}</b>`);
     if (fc) chip('dot', m.color, 'Forecast mirrored below the line');
@@ -290,7 +290,7 @@ class PowerRibbonsCard extends HTMLElement {
     const m = this._sourceModel(s);
     const withPlan = m && m.hasPlanDest;
     const head = document.createElement('span');
-    head.textContent = withPlan ? 'Where it went so far vs the 00:00 plan (kWh):' : 'Where it went so far (kWh):';
+    head.textContent = withPlan ? 'Where it went so far vs the start-of-day estimate (kWh):' : 'Where it went so far (kWh):';
     el.appendChild(head);
     for (const l of s.layers) {
       const d = this._destinations[l.to];
@@ -875,7 +875,7 @@ class PowerRibbonsCard extends HTMLElement {
       rows.push(`<b>${hm(p.t)}–${hm(p.t + m.P)}</b>`);
       const solar = m.fc?.kind === 'solar';
       if (p.f !== null) {
-        rows.push(`<div class="row"><span><i style="--c:${m.color}"></i>${solar ? 'Forecast' : 'Plan at 00:00'}</span><b>${kw(p.f)}</b></div>`);
+        rows.push(`<div class="row"><span><i style="--c:${m.color}"></i>${solar ? 'Forecast' : 'Start-of-day estimate'}</span><b>${kw(p.f)}</b></div>`);
         if (g) el('circle', { cx: xx, cy: g.Y(p.f), r: 3.5, fill: 'var(--card-background-color, #fff)', stroke: m.color, 'stroke-width': 2 }, this._hoverDots);
       }
       if (p.f10 !== null && p.f90 !== null) rows.push(`<div class="row sub"><span>10–90%</span><span>${p.f10.toFixed(2)}–${kw(p.f90)}</span></div>`);
@@ -884,7 +884,7 @@ class PowerRibbonsCard extends HTMLElement {
       if (p.actual !== null) rows.push(`<div class="row"><span><i style="--c:${m.actualColor}"></i>Actual${p.t + m.P > d.end ? ' so far' : ''}</span><b>${kw(p.actual)}</b></div>`);
       const hasAct = Object.keys(p.dest).length > 0;
       if (hasAct || p.pdest) {
-        rows.push(`<div class="sep"></div><div class="row"><span>${hasAct ? 'Went to' : 'Planned to go to'}</span>${hasAct && p.pdest ? '<span>actual · plan</span>' : ''}</div>`);
+        rows.push(`<div class="sep"></div><div class="row"><span>${hasAct ? 'Went to' : 'Expected to go to'}</span>${hasAct && p.pdest ? '<span>actual · estimate</span>' : ''}</div>`);
         for (const l of s.layers) {
           const dd = this._destinations[l.to];
           const a = hasAct ? kw(p.dest[l.to] || 0) : '';

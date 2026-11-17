@@ -18,9 +18,9 @@ Tabs across the top (**All**, then one per source) switch to a detail view for a
 
 - **Above the axis:** the **forecast** as a smooth line with a fading fill, and the **actual** as bars (average kW per 30 minutes). Earlier parts of the day are lightly shaded, and **Now** is marked along with the forecast value at that moment.
   - **Solar** uses a Solcast-style detailed forecast (`forecast.solar_detail`, e.g. Predbat's `sensor.predbat_pv_today`): the calibrated forecast, the 10–90% band, and the forecast *before calibration* as a dashed line.
-  - **Grid / Battery** use the **plan as it stood at 00:00** (read back from HA history), plus the **latest plan** for the rest of today as a dashed line.
+  - **Grid / Battery** use the **start-of-day estimate**: Predbat's plan as it stood at 00:00, read back from HA history, plus the **latest plan** for the rest of today as a dashed line.
 - **Below the axis:** the same bars mirrored downwards, split by **where the power went**, on the same kW scale. A dotted line mirrors the forecast across the whole day, so the gap between forecast and actual is visible on both sides.
-- **Keys:** above the chart, the forecast total, actual vs forecast so far (%) and what's left today. Below the chart, what has gone to each destination so far, against the 00:00 plan's expected split (so far, and for the whole day). Hover shows actual and plan for each destination.
+- **Keys:** above the chart, the forecast total, actual vs forecast so far (%) and what's left today. Below the chart, what has gone to each destination so far, against the start-of-day estimate's expected split (so far, and for the whole day). Hover shows actual and estimate for each destination.
 
 ### Forecast (Predbat)
 
