@@ -1,0 +1,6 @@
+{
+  "name": "Power Ribbons Card",
+  "filename": "power-ribbons-card.js",
+  "render_readme": true,
+  "homeassistant": "2024.1.0"
+}
