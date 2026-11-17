@@ -13,7 +13,7 @@
  * MIT licence. https://github.com/spencermccarthy/power-ribbons-card
  */
 
-const VERSION = '0.5.2';
+const VERSION = '0.5.3';
 
 const DEFAULT_COLOURS = {
   house: '#fb8c00',
@@ -213,7 +213,13 @@ class PowerRibbonsCard extends HTMLElement {
   }
 
   _render() {
-    this._plot.style.height = `${this._tab === 'all' ? this._config.height : this._config.detail_height}px`;
+    const all = this._tab === 'all';
+    this._plot.style.height = `${all ? this._config.height : this._config.detail_height}px`;
+    // source tabs: forecast/actual key sits above the chart (it describes the top half),
+    // the where-it-went key sits below (it describes the mirrored bars)
+    this._plot.style.order = 2;
+    this._legend.style.order = all ? 3 : 1;
+    this._summary.style.order = all ? 1 : 3;
     for (const b of this._tabsEl.children) {
       const on = b.dataset.tab === this._tab;
       b.classList.toggle('on', on);
@@ -282,7 +288,7 @@ class PowerRibbonsCard extends HTMLElement {
     const s = this._source();
     if (!s) return;
     const head = document.createElement('span');
-    head.textContent = 'Below the line, where it went so far (kWh):';
+    head.textContent = 'Where it went so far (kWh):';
     el.appendChild(head);
     for (const l of s.layers) {
       const d = this._destinations[l.to];
