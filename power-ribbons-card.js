@@ -13,7 +13,7 @@
  * MIT licence. https://github.com/spencermccarthy/power-ribbons-card
  */
 
-const VERSION = '0.5.1';
+const VERSION = '0.5.2';
 
 const DEFAULT_COLOURS = {
   house: '#fb8c00',
@@ -264,7 +264,7 @@ class PowerRibbonsCard extends HTMLElement {
     chip('', m.actualColor, `Actual <b>${k(m.actualSoFar)}</b>${fc ? ` vs ${k(m.forecastSoFar)} ${fc.kind === 'solar' ? 'forecast' : 'planned'} so far${pct}` : ''}`);
     if (fc && fc.kind === 'solar' && fc.raw !== null && fc.calibrated) chip('dash', 'var(--prc-muted)', `Before calibration ${k(fc.raw)}`);
     if (fc && fc.kind === 'plan' && m.latestRest !== null) chip('dash', m.color, `Latest plan, rest of today <b>${k(m.latestRest)}</b>`);
-    if (fc) chip('dot', 'var(--primary-text-color)', 'Forecast below the line, rest of today');
+    if (fc) chip('dot', m.color, 'Forecast mirrored below the line');
   }
 
   _renderSummary() {
@@ -656,7 +656,7 @@ class PowerRibbonsCard extends HTMLElement {
       forecastSoFar += p.f * (overlap / HOUR);
     }
     const m = { role, P, per, fc, latestRest, actualSoFar, forecastSoFar, color: info.color,
-      actualColor: c.actual_color || '#2bb673' };
+      actualColor: c.actual_color || 'color-mix(in srgb, var(--primary-text-color) 38%, transparent)' };
     this._modelCache = { key, m };
     return m;
   }
@@ -672,11 +672,12 @@ class PowerRibbonsCard extends HTMLElement {
     for (const p of per) for (const v of [p.actual, p.f, p.f90, p.raw, p.latest]) if (v !== null && v > up) up = v;
     const upMax = niceCeil(up * 1.08);
     // the forecast that matters for the rest of today: solar = the forecast line, others = latest plan
-    const futureVal = (p) => (m.fc?.kind === 'solar' ? p.f : (p.latest ?? p.f));
+    // the main forecast line (solar forecast, or the plan at 00:00), falling back to the latest plan
+    const forecastVal = (p) => p.f ?? p.latest;
     let low = 0.25;
     for (const p of per) {
       let a = Object.values(p.dest).reduce((x, v) => x + v, 0);
-      if (p.t + m.P > d.end) a = Math.max(a, futureVal(p) || 0);
+      a = Math.max(a, forecastVal(p) || 0);
       if (a > low) low = a;
     }
     const lowMax = Math.max(low * 1.08, upMax * 0.25);
@@ -735,13 +736,13 @@ class PowerRibbonsCard extends HTMLElement {
       }
     }
 
-    // forecast total for the rest of today, mirrored below the axis as a dotted line
-    const ahead = per.filter((p) => p.t + m.P > d.end && futureVal(p) !== null);
-    if (ahead.length > 1) {
-      const xs = [f.x(d.end), ...ahead.slice(1).map(mid)];
-      const ys = [YD(futureVal(ahead[0])), ...ahead.slice(1).map((p) => YD(futureVal(p)))];
-      el('path', { d: smoothPath(xs, ys), fill: 'none', stroke: 'var(--primary-text-color)', 'stroke-width': 2,
-        'stroke-dasharray': '0.1 4', 'stroke-linecap': 'round', opacity: 0.6 }, svg);
+    // the forecast line mirrored below the axis (dotted, whole day) so actual vs forecast reads on both sides
+    const mir = per.filter((p) => forecastVal(p) !== null);
+    if (mir.length > 1) {
+      const xs = [f.x(d.start), ...mir.map(mid), f.x(d.start + DAY)];
+      const ys = [YD(forecastVal(mir[0])), ...mir.map((p) => YD(forecastVal(p))), YD(forecastVal(mir[mir.length - 1]))];
+      el('path', { d: smoothPath(xs, ys), fill: 'none', stroke: m.color, 'stroke-width': 2.2,
+        'stroke-dasharray': '0.1 4.5', 'stroke-linecap': 'round', opacity: 0.95 }, svg);
     }
 
     // forecast line with fading fill
