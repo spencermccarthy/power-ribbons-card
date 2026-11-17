@@ -14,6 +14,8 @@ There are two layouts:
 
 All the ribbons share one timeline, from midnight to now, and they all use the same scale, so you can compare thicknesses directly. Hover over (or tap) the chart to see the breakdown for any 10-minute block.
 
+Tabs across the top (**All**, then one per source) switch to a detail view for a single source. That view has a line for each destination with a fading fill underneath, plus today's kWh totals.
+
 No other cards or libraries are needed. The card reads Home Assistant's recorder history directly.
 
 ## Install (HACS)
@@ -57,13 +59,19 @@ sources:
 | `bin_minutes` | `10` | Averaging period for each point |
 | `refresh_minutes` | `5` | How often history is fetched again |
 | `mode` | `overlap` | `overlap` or `stack` (see above) |
-| `fill_opacity` | `0.22` | Fill opacity in `overlap` mode |
-| `stroke_width` | `1.5` | Outline width in `overlap` mode |
+| `tabs` | `true` | Shows the All and per-source tabs |
+| `all_label` | `All` | Label for the overview tab |
+| `fill_opacity` | `0.35` | Strongest fill opacity, which fades towards the edges |
+| `stroke_width` | `2` | Outline width in `overlap` mode |
 | `opacity` | `0.85` | Fill opacity in `stack` mode |
 | `max_kw` | auto | Fixes the scale. By default it scales to the biggest ribbon today |
 | `min_scale_kw` | `1` | Smallest scale to use when auto-scaling, so quiet days don't look huge |
 | `label_width` | `64` | Width in px of the space on the left for source names |
 | `legend_text` | built-in | Text shown before the colour key. Use `""` to hide it |
+
+## Credits
+
+The visual style (section header, pill tabs, fading area fills and tooltip) is modelled on [Predbat Card](https://github.com/mimikm/Predbat-Card) by mimikm (MIT).
 
 ## Licence
 

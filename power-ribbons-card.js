@@ -1,15 +1,18 @@
 /*
  * Power Ribbons Card for Home Assistant
  *
- * Draws one ribbon per power source (e.g. Solar, Grid, Battery) over today.
- * Each ribbon is centred on its own line: its thickness is how much power the
- * source supplied, and it is split into coloured layers for where that power
- * went (e.g. House, Battery, Grid).
+ * Shows where power came from and where it went today.
+ * "All" tab: one centred ribbon per source (e.g. Solar, Grid, Battery), with a
+ * ribbon per destination (e.g. House, Battery, Grid) as thick as the power sent there.
+ * Source tabs: a line per destination for that source, plus today's totals.
+ *
+ * Visual style (header, pill tabs, fading fills, tooltip) is modelled on
+ * Predbat Card by mimikm, https://github.com/mimikm/Predbat-Card (MIT).
  *
  * MIT licence. https://github.com/spencermccarthy/power-ribbons-card
  */
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 
 const DEFAULT_COLOURS = {
   house: '#fb8c00',
@@ -21,19 +24,14 @@ const DEFAULT_COLOURS = {
 const PALETTE = ['#8e24aa', '#00acc1', '#f4511e', '#7cb342', '#5e35b1', '#c0ca33'];
 const HOUR = 3600000;
 const DAY = 24 * HOUR;
+const NS = 'http://www.w3.org/2000/svg';
 
 class PowerRibbonsCard extends HTMLElement {
   static getStubConfig() {
     return {
-      title: 'Where power came from and went today',
-      destinations: {
-        house: { name: 'House' },
-        battery: { name: 'Battery' },
-        grid: { name: 'Grid (export)' },
-      },
-      sources: [
-        { name: 'Solar', flows: [{ entity: 'sensor.solar_to_house', to: 'house' }] },
-      ],
+      title: 'Power flows today',
+      destinations: { house: { name: 'House' }, battery: { name: 'Battery' }, grid: { name: 'Grid (export)' } },
+      sources: [{ name: 'Solar', flows: [{ entity: 'sensor.solar_to_house', to: 'house' }] }],
     };
   }
 
@@ -55,16 +53,19 @@ class PowerRibbonsCard extends HTMLElement {
       refresh_minutes: 5,
       mode: 'overlap',
       opacity: 0.85,
-      fill_opacity: 0.22,
-      stroke_width: 1.5,
+      fill_opacity: 0.35,
+      stroke_width: 2,
       min_scale_kw: 1,
       label_width: 64,
+      tabs: true,
       ...config,
     };
     this._destinations = this._buildDestinations(config);
+    this._tab = this._tab && (this._tab === 'all' || config.sources.some((s) => s.name === this._tab)) ? this._tab : 'all';
     this._data = null;
     this._error = null;
     this._lastFetch = 0;
+    this._uid = Math.random().toString(36).slice(2, 8);
     this._buildShell();
   }
 
@@ -93,7 +94,7 @@ class PowerRibbonsCard extends HTMLElement {
     if (this._ro) { this._ro.disconnect(); this._ro = null; }
   }
 
-  // ---------- setup ----------
+  // ---------------------------------------------------------------- setup
 
   _buildDestinations(config) {
     const keys = [];
@@ -115,27 +116,47 @@ class PowerRibbonsCard extends HTMLElement {
     const c = this._config;
     this.shadowRoot.innerHTML = `
       <style>
-        ha-card { padding: 12px 16px 12px; overflow: hidden; }
-        .title { font-size: 16px; font-weight: 500; color: var(--primary-text-color); margin: 0 0 6px; line-height: 1.4; }
+        :host { --prc-muted: var(--secondary-text-color, #6b6f76);
+                --prc-line: color-mix(in srgb, var(--primary-text-color, #000) 12%, transparent);
+                --prc-tile: color-mix(in srgb, var(--primary-text-color, #000) 4%, transparent); }
+        ha-card { padding: 14px 16px 12px; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+        .head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; }
+        .ttl { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--prc-muted); }
+        .tabs { display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px; background: var(--prc-tile);
+                border: 1px solid var(--prc-line); max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+        .tabs::-webkit-scrollbar { display: none; }
+        .tabs button { border: none; background: none; color: var(--prc-muted); font: inherit; font-size: 13px; font-weight: 600;
+                       padding: 4px 12px; border-radius: 999px; cursor: pointer; white-space: nowrap; flex: none; }
+        .tabs button.on { background: var(--card-background-color, #fff); color: var(--primary-text-color);
+                          box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+        .summary { font-size: 13px; color: var(--prc-muted); font-variant-numeric: tabular-nums; min-height: 18px; }
+        .summary b { color: var(--primary-text-color); font-weight: 650; }
+        .summary .chip { display: inline-flex; align-items: center; gap: 5px; margin-left: 12px; white-space: nowrap; }
+        .summary .chip i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
         .plot { position: relative; width: 100%; height: ${c.height}px; touch-action: pan-y; }
         svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+        svg .axis { font-size: 11px; fill: var(--prc-muted); font-variant-numeric: tabular-nums; }
+        svg .grid { stroke: var(--prc-line); stroke-width: 1; }
+        svg .lbl { font-size: 12px; font-weight: 600; fill: var(--prc-muted); }
         .msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-               color: var(--secondary-text-color); font-size: 13px; }
-        .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px;
-                  color: var(--secondary-text-color); }
-        .legend span { display: inline-flex; align-items: center; gap: 5px; }
-        .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-        .tip { position: absolute; pointer-events: none; display: none; z-index: 2; min-width: 150px;
+               color: var(--prc-muted); font-size: 13px; text-align: center; }
+        .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--prc-muted); }
+        .legend span { display: inline-flex; align-items: center; }
+        .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; background: var(--c); }
+        .legend i.line { height: 3px; border-radius: 2px; }
+        .tip { position: absolute; top: 4px; pointer-events: none; z-index: 2; display: none;
                background: var(--card-background-color, #fff); color: var(--primary-text-color);
-               border: 1px solid var(--divider-color, #ddd); border-radius: 8px; padding: 6px 8px;
-               font-size: 12px; line-height: 1.45; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
-        .tip b { font-weight: 600; }
-        .tip .src { margin-top: 3px; }
-        .tip .row { display: flex; align-items: center; gap: 5px; color: var(--secondary-text-color); padding-left: 6px; }
-        .tip .row i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+               border: 1px solid var(--prc-line); border-radius: 10px; padding: 8px 11px; font-size: 12px;
+               box-shadow: 0 4px 16px rgba(0,0,0,.15); white-space: nowrap; font-variant-numeric: tabular-nums; line-height: 1.5; }
+        .tip b { font-weight: 650; }
+        .tip .row { display: flex; justify-content: space-between; gap: 14px; }
+        .tip .row.sub { color: var(--prc-muted); padding-left: 8px; }
+        .tip .row i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; background: var(--c); }
+        .tip .sep { height: 4px; }
       </style>
       <ha-card>
-        ${c.title ? `<div class="title"></div>` : ''}
+        <div class="head"><div class="ttl"></div><div class="tabs" role="tablist"></div></div>
+        <div class="summary"></div>
         <div class="plot">
           <svg></svg>
           <div class="msg">Loading…</div>
@@ -143,24 +164,25 @@ class PowerRibbonsCard extends HTMLElement {
         </div>
         <div class="legend"></div>
       </ha-card>`;
-    if (c.title) this.shadowRoot.querySelector('.title').textContent = c.title;
-    this._plot = this.shadowRoot.querySelector('.plot');
-    this._svg = this.shadowRoot.querySelector('svg');
-    this._msg = this.shadowRoot.querySelector('.msg');
-    this._tip = this.shadowRoot.querySelector('.tip');
+    const $ = (s) => this.shadowRoot.querySelector(s);
+    $('.ttl').textContent = c.title || '';
+    this._tabsEl = $('.tabs');
+    this._summary = $('.summary');
+    this._plot = $('.plot');
+    this._svg = $('svg');
+    this._msg = $('.msg');
+    this._tip = $('.tip');
+    this._legend = $('.legend');
 
-    const legend = this.shadowRoot.querySelector('.legend');
-    const intro = document.createElement('span');
-    intro.textContent = c.legend_text ?? (c.mode === 'stack'
-      ? 'Thickness = how much each source supplied. Colour = where it went:'
-      : 'Each colour is where that source\'s power went; thickness = how much:');
-    legend.appendChild(intro);
-    for (const d of Object.values(this._destinations)) {
-      const s = document.createElement('span');
-      const i = document.createElement('i');
-      i.style.background = d.color;
-      s.append(i, document.createTextNode(d.name));
-      legend.appendChild(s);
+    const tabs = c.tabs ? [['all', c.all_label || 'All'], ...c.sources.map((s) => [s.name, s.name])] : [];
+    this._tabsEl.style.display = tabs.length ? '' : 'none';
+    for (const [key, label] of tabs) {
+      const b = document.createElement('button');
+      b.setAttribute('role', 'tab');
+      b.dataset.tab = key;
+      b.textContent = label;
+      b.addEventListener('click', () => { this._tab = key; this._hideHover(); this._render(); });
+      this._tabsEl.appendChild(b);
     }
 
     this._plot.addEventListener('pointermove', (e) => this._hover(e));
@@ -170,15 +192,80 @@ class PowerRibbonsCard extends HTMLElement {
     if (this._ro) this._ro.disconnect();
     this._ro = new ResizeObserver(() => this._draw());
     this._ro.observe(this._plot);
+    this._render();
   }
 
-  // ---------- data ----------
+  _render() {
+    for (const b of this._tabsEl.children) {
+      const on = b.dataset.tab === this._tab;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', on);
+    }
+    this._renderLegend();
+    this._renderSummary();
+    this._draw();
+  }
+
+  _source() {
+    return this._data?.sources.find((s) => s.name === this._tab) || null;
+  }
+
+  _renderLegend() {
+    const lg = this._legend;
+    lg.innerHTML = '';
+    const all = this._tab === 'all';
+    if (all) {
+      const intro = document.createElement('span');
+      intro.textContent = this._config.legend_text ?? 'Each colour is where that source’s power went; thickness = how much:';
+      if (intro.textContent) lg.appendChild(intro);
+    }
+    const src = this._config.sources.find((s) => s.name === this._tab);
+    const keys = all ? Object.keys(this._destinations) : src.flows.map((f) => f.to);
+    for (const k of keys) {
+      const d = this._destinations[k];
+      const s = document.createElement('span');
+      const i = document.createElement('i');
+      if (!all) i.className = 'line';
+      i.style.setProperty('--c', d.color);
+      s.append(i, document.createTextNode(d.name));
+      lg.appendChild(s);
+    }
+  }
+
+  _renderSummary() {
+    const el = this._summary;
+    el.innerHTML = '';
+    if (!this._data) return;
+    const hours = this._config.bin_minutes / 60;
+    const kwh = (arr) => arr.reduce((a, v) => a + v, 0) * hours;
+    const fmt = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1));
+    if (this._tab === 'all') {
+      const parts = this._data.sources.map((s) => `${s.name} <b>${fmt(kwh(s.total))}</b>`);
+      el.innerHTML = `Today (kWh): ${parts.join(' · ')}`;
+      return;
+    }
+    const s = this._source();
+    if (!s) return;
+    const head = document.createElement('span');
+    head.innerHTML = `${escapeHtml(s.name)} today: <b>${fmt(kwh(s.total))} kWh</b>`;
+    el.appendChild(head);
+    for (const l of s.layers) {
+      const d = this._destinations[l.to];
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.style.setProperty('--c', d.color);
+      chip.innerHTML = `<i></i>${escapeHtml(d.name)} <b>${fmt(kwh(l.values))}</b>`;
+      el.appendChild(chip);
+    }
+  }
+
+  // ---------------------------------------------------------------- data
 
   _scale(entity) {
     const unit = this._hass?.states?.[entity]?.attributes?.unit_of_measurement;
     if (unit === 'W') return 0.001;
     if (unit === 'MW') return 1000;
-    return 1; // kW or unknown
+    return 1;
   }
 
   async _fetch() {
@@ -235,32 +322,21 @@ class PowerRibbonsCard extends HTMLElement {
       this._error = (err && (err.message || err.body?.message)) || String(err);
     } finally {
       this._fetching = false;
-      this._draw();
+      this._render();
     }
   }
 
-  // ---------- drawing ----------
+  // ---------------------------------------------------------------- drawing
 
-  _geometry() {
+  _frame() {
     const c = this._config;
     const W = this._plot.clientWidth;
     const H = c.height;
-    const padL = c.label_width, padR = 8, padT = 4, axisH = 20;
-    const n = c.sources.length;
-    const rowH = (H - padT - axisH) / n;
+    const all = this._tab === 'all';
+    const padL = all ? c.label_width : 8, padR = all ? 8 : 40, padT = 6, axisH = 20;
     const d = this._data;
-    let maxKw = c.max_kw || 0;
-    if (!maxKw) {
-      maxKw = c.min_scale_kw;
-      for (const s of d.sources) {
-        const arrays = c.mode === 'stack' ? [s.total] : s.layers.map((l) => l.values);
-        for (const arr of arrays) for (const v of arr) if (v > maxKw) maxKw = v;
-      }
-    }
-    const pxPerKw = (rowH * 0.92) / maxKw;
     const x = (t) => padL + ((t - d.start) / DAY) * (W - padL - padR);
-    const centre = (i) => padT + rowH * (i + 0.5);
-    return { W, H, padL, padR, padT, axisH, rowH, pxPerKw, x, centre };
+    return { W, H, padL, padR, padT, axisH, x, bottom: H - axisH };
   }
 
   _draw() {
@@ -271,141 +347,212 @@ class PowerRibbonsCard extends HTMLElement {
     if (!this._data) return;
     this._msg.style.display = 'none';
 
-    const g = this._geometry();
-    const d = this._data;
-    const NS = 'http://www.w3.org/2000/svg';
+    const f = this._frame();
     const svg = this._svg;
-    svg.setAttribute('viewBox', `0 0 ${g.W} ${g.H}`);
+    svg.setAttribute('viewBox', `0 0 ${f.W} ${f.H}`);
     svg.innerHTML = '';
-    const el = (tag, attrs, parent = svg) => {
-      const e = document.createElementNS(NS, tag);
-      for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-      parent.appendChild(e);
-      return e;
-    };
+    this._defs = el('defs', {}, svg);
+    this._timeAxis(f);
+    if (this._tab === 'all') this._drawAll(f);
+    else this._drawSource(f, this._source());
 
-    // x positions: ribbon starts at midnight edge, ends at "now"
-    const xs = [g.x(d.start), ...d.times.map(g.x), g.x(d.end)];
-    const pad = (arr) => [arr[0], ...arr, arr[arr.length - 1]];
+    const nx = f.x(this._data.end);
+    el('line', { x1: nx, x2: nx, y1: f.padT, y2: f.bottom, stroke: 'var(--primary-color, #03a9f4)', 'stroke-width': 1.5, 'stroke-dasharray': '4 3' }, svg);
+    this._hoverLine = el('line', { x1: 0, x2: 0, y1: f.padT, y2: f.bottom, class: 'grid', 'stroke-width': 1, opacity: 0, 'pointer-events': 'none', style: 'stroke: var(--primary-text-color)' }, svg);
+    this._hoverDots = el('g', { 'pointer-events': 'none' }, svg);
+  }
 
-    // hour grid + axis labels
-    const plotW = g.W - g.padL - g.padR;
+  _timeAxis(f) {
+    const d = this._data;
+    const plotW = f.W - f.padL - f.padR;
     const step = plotW < 420 ? 6 : plotW < 700 ? 3 : 2;
     for (let h = 0; h <= 24; h += step) {
-      const xx = g.x(d.start + h * HOUR);
-      el('line', { x1: xx, x2: xx, y1: g.padT, y2: g.H - g.axisH, stroke: 'var(--divider-color, #e0e0e0)', 'stroke-width': 1, opacity: 0.5 });
+      const xx = f.x(d.start + h * HOUR);
+      el('line', { x1: xx, x2: xx, y1: f.padT, y2: f.bottom, class: 'grid', opacity: 0.6 }, this._svg);
       if (h < 24) {
-        const t = el('text', { x: xx, y: g.H - 5, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--secondary-text-color)' });
+        const t = el('text', { x: xx, y: f.H - 5, 'text-anchor': 'middle', class: 'axis' }, this._svg);
         t.textContent = `${String(h).padStart(2, '0')}:00`;
       }
     }
+  }
 
-    // ribbons
+  _gradient(colour, kind, y1, y2) {
+    const id = `prc-${this._uid}-${this._gid = (this._gid || 0) + 1}`;
+    const g = el('linearGradient', { id, x1: 0, x2: 0, y1, y2, gradientUnits: 'userSpaceOnUse' }, this._defs);
+    const op = this._config.fill_opacity;
+    const stops = kind === 'down'
+      ? [[0, op], [1, 0]]
+      : [[0, op * 0.25], [0.5, op], [1, op * 0.25]];
+    for (const [o, a] of stops) el('stop', { offset: o, 'stop-color': colour, 'stop-opacity': a }, g);
+    return `url(#${id})`;
+  }
+
+  _drawAll(f) {
+    const c = this._config;
+    const d = this._data;
+    const n = d.sources.length;
+    const rowH = (f.bottom - f.padT) / n;
+    let maxKw = c.max_kw || 0;
+    if (!maxKw) {
+      maxKw = c.min_scale_kw;
+      for (const s of d.sources) {
+        const arrays = c.mode === 'stack' ? [s.total] : s.layers.map((l) => l.values);
+        for (const arr of arrays) for (const v of arr) if (v > maxKw) maxKw = v;
+      }
+    }
+    const pxPerKw = (rowH * 0.92) / maxKw;
+    const xs = [f.x(d.start), ...d.times.map(f.x), f.x(d.end)];
+    this._allGeom = { rowH, pxPerKw };
+
     d.sources.forEach((s, i) => {
-      const cy = g.centre(i);
-      el('line', { x1: g.padL, x2: g.W - g.padR, y1: cy, y2: cy, stroke: 'var(--secondary-text-color)', 'stroke-width': 1, 'stroke-dasharray': '3 4', opacity: 0.35 });
-      const label = el('text', { x: g.padL - 10, y: cy, 'text-anchor': 'end', 'dominant-baseline': 'central', 'font-size': 12, 'font-weight': 600, fill: 'var(--secondary-text-color)' });
+      const cy = f.padT + rowH * (i + 0.5);
+      el('line', { x1: f.padL, x2: f.W - f.padR, y1: cy, y2: cy, class: 'grid', 'stroke-dasharray': '3 4' }, this._svg);
+      const label = el('text', { x: f.padL - 10, y: cy, 'text-anchor': 'end', 'dominant-baseline': 'central', class: 'lbl' }, this._svg);
       label.textContent = s.name;
+      const half = rowH * 0.46;
 
-      if (this._config.mode === 'stack') {
-        // cumulative edges, top to bottom, centred on cy
-        let edge = pad(s.total.map((t) => cy - (t * g.pxPerKw) / 2));
+      if (c.mode === 'stack') {
+        let edge = pad(s.total.map((t) => cy - (t * pxPerKw) / 2));
         for (const layer of s.layers) {
-          const vals = pad(layer.values.map((v) => v * g.pxPerKw));
+          const vals = pad(layer.values.map((v) => v * pxPerKw));
           const next = edge.map((y, k) => y + vals[k]);
           const path = smoothPath(xs, edge) + ' ' + smoothPath(xs.slice().reverse(), next.slice().reverse(), true) + ' Z';
-          el('path', { d: path, fill: this._destinations[layer.to].color, 'fill-opacity': this._config.opacity, stroke: 'none' });
+          el('path', { d: path, fill: this._destinations[layer.to].color, 'fill-opacity': c.opacity }, this._svg);
           edge = next;
         }
-      } else {
-        // overlap: every destination is its own ribbon centred on cy; biggest drawn first
-        const order = s.layers.slice().sort((a, b) => sumOf(b.values) - sumOf(a.values));
-        for (const layer of order) {
-          const half = pad(layer.values.map((v) => (v * g.pxPerKw) / 2));
-          const colour = this._destinations[layer.to].color;
-          for (const [a, b] of runs(half, 0.4)) {
-            const sx = xs.slice(a, b + 1);
-            const top = half.slice(a, b + 1).map((h) => cy - h);
-            const bot = half.slice(a, b + 1).map((h) => cy + h);
-            const path = smoothPath(sx, top) + ' ' + smoothPath(sx.slice().reverse(), bot.slice().reverse(), true) + ' Z';
-            el('path', {
-              d: path, fill: colour, 'fill-opacity': this._config.fill_opacity,
-              stroke: colour, 'stroke-width': this._config.stroke_width, 'stroke-opacity': 0.95, 'stroke-linejoin': 'round',
-            });
-          }
+        return;
+      }
+
+      const order = s.layers.slice().sort((a, b) => sumOf(b.values) - sumOf(a.values));
+      for (const layer of order) {
+        const colour = this._destinations[layer.to].color;
+        const fill = this._gradient(colour, 'centre', cy - half, cy + half);
+        const hw = pad(layer.values.map((v) => (v * pxPerKw) / 2));
+        for (const [a, b] of runs(hw, 0.4)) {
+          const sx = xs.slice(a, b + 1);
+          const top = hw.slice(a, b + 1).map((h) => cy - h);
+          const bot = hw.slice(a, b + 1).map((h) => cy + h);
+          el('path', {
+            d: smoothPath(sx, top) + ' ' + smoothPath(sx.slice().reverse(), bot.slice().reverse(), true) + ' Z',
+            fill, stroke: colour, 'stroke-width': c.stroke_width, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+          }, this._svg);
         }
       }
     });
-
-    // now marker
-    const nx = g.x(d.end);
-    el('line', { x1: nx, x2: nx, y1: g.padT, y2: g.H - g.axisH, stroke: 'var(--primary-color, #03a9f4)', 'stroke-width': 1.5, 'stroke-dasharray': '4 3' });
-
-    this._hoverLine = el('line', { x1: 0, x2: 0, y1: g.padT, y2: g.H - g.axisH, stroke: 'var(--primary-text-color)', 'stroke-width': 1, opacity: 0, 'pointer-events': 'none' });
   }
+
+  _drawSource(f, s) {
+    if (!s) return;
+    const d = this._data;
+    let max = 0.5;
+    for (const l of s.layers) for (const v of l.values) if (v > max) max = v;
+    const top = niceCeil(max * 1.08);
+    const Y = (v) => f.bottom - (v / top) * (f.bottom - f.padT);
+    this._srcGeom = { Y };
+    const niceSteps = [0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25, 50];
+    const ticks = [4, 5, 3, 6, 2].find((n) => niceSteps.some((st) => Math.abs(top / n - st) < 1e-9)) || 4;
+    for (let i = 0; i <= ticks; i++) {
+      const v = (top * i) / ticks;
+      const yy = Y(v);
+      el('line', { x1: f.padL, x2: f.W - f.padR, y1: yy, y2: yy, class: 'grid' }, this._svg);
+      const t = el('text', { x: f.W - f.padR + 6, y: yy + 4, class: 'axis' }, this._svg);
+      t.textContent = i === ticks ? `${fmtNum(v)} kW` : fmtNum(v);
+    }
+    const xs = [f.x(d.start), ...d.times.map(f.x), f.x(d.end)];
+    const order = s.layers.slice().sort((a, b) => sumOf(b.values) - sumOf(a.values));
+    for (const layer of order) {
+      const colour = this._destinations[layer.to].color;
+      const ys = pad(layer.values).map(Y);
+      const line = smoothPath(xs, ys);
+      const area = `${line} L ${xs[xs.length - 1].toFixed(1)} ${f.bottom} L ${xs[0].toFixed(1)} ${f.bottom} Z`;
+      el('path', { d: area, fill: this._gradient(colour, 'down', f.padT, f.bottom) }, this._svg);
+      el('path', { d: line, fill: 'none', stroke: colour, 'stroke-width': 2.2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, this._svg);
+    }
+  }
+
+  // ---------------------------------------------------------------- hover
 
   _hover(e) {
     if (!this._data || !this._hoverLine) return;
-    const g = this._geometry();
+    const f = this._frame();
     const rect = this._plot.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const d = this._data;
-    const t = d.start + ((px - g.padL) / (g.W - g.padL - g.padR)) * DAY;
+    const t = d.start + ((px - f.padL) / (f.W - f.padL - f.padR)) * DAY;
     if (t < d.start || t > d.end) { this._hideHover(); return; }
     const bin = this._config.bin_minutes * 60000;
     const idx = Math.min(d.times.length - 1, Math.max(0, Math.floor((t - d.start) / bin)));
-    const xx = g.x(d.times[idx]);
+    const xx = f.x(d.times[idx]);
     this._hoverLine.setAttribute('x1', xx);
     this._hoverLine.setAttribute('x2', xx);
-    this._hoverLine.setAttribute('opacity', 0.4);
+    this._hoverLine.setAttribute('opacity', 0.35);
+    this._hoverDots.innerHTML = '';
 
     const binStart = new Date(d.start + idx * bin);
-    const fmt = (dt) => `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
-    const kw = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1)) + ' kW';
-    const tip = this._tip;
-    tip.innerHTML = '';
-    const head = document.createElement('b');
-    head.textContent = `${fmt(binStart)}–${fmt(new Date(Math.min(d.end, binStart.getTime() + bin)))}`;
-    tip.appendChild(head);
-    for (const s of d.sources) {
-      if (s.total[idx] < 0.05) continue;
-      const src = document.createElement('div');
-      src.className = 'src';
-      src.textContent = `${s.name}: ${kw(s.total[idx])}`;
-      tip.appendChild(src);
+    const hm = (dt) => `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+    const kw = (v) => `${v >= 10 ? v.toFixed(0) : v.toFixed(2)} kW`;
+    const rows = [`<b>${hm(binStart)}–${hm(new Date(Math.min(d.end, binStart.getTime() + bin)))}</b>`];
+    const sources = this._tab === 'all' ? d.sources : [this._source()].filter(Boolean);
+    for (const s of sources) {
+      if (this._tab === 'all' && s.total[idx] < 0.05) continue;
+      rows.push(`<div class="sep"></div><div class="row"><span>${escapeHtml(s.name)}</span><b>${kw(s.total[idx])}</b></div>`);
       for (const l of s.layers) {
-        if (l.values[idx] < 0.05) continue;
-        const row = document.createElement('div');
-        row.className = 'row';
-        const i = document.createElement('i');
-        i.style.background = this._destinations[l.to].color;
-        row.append(i, document.createTextNode(`${this._destinations[l.to].name} ${kw(l.values[idx])}`));
-        tip.appendChild(row);
+        const v = l.values[idx];
+        if (this._tab === 'all' && v < 0.05) continue;
+        const dd = this._destinations[l.to];
+        rows.push(`<div class="row sub"><span><i style="--c:${dd.color}"></i>${escapeHtml(dd.name)}</span><span>${kw(v)}</span></div>`);
+        if (this._tab !== 'all' && this._srcGeom) {
+          el('circle', { cx: xx, cy: this._srcGeom.Y(v), r: 3.5, fill: 'var(--card-background-color, #fff)', stroke: dd.color, 'stroke-width': 2 }, this._hoverDots);
+        }
       }
     }
-    if (tip.childElementCount === 1) {
-      const none = document.createElement('div');
-      none.className = 'src';
-      none.textContent = 'No flow';
-      tip.appendChild(none);
-    }
+    if (rows.length === 1) rows.push('<div class="row sub"><span>No flow</span></div>');
+    const tip = this._tip;
+    tip.innerHTML = rows.join('');
     tip.style.display = 'block';
     const tw = tip.offsetWidth;
-    const left = xx + 12 + tw > rect.width ? xx - 12 - tw : xx + 12;
+    const left = xx + 14 + tw > rect.width ? xx - 14 - tw : xx + 14;
     tip.style.left = `${Math.max(0, left)}px`;
-    tip.style.top = '4px';
   }
 
   _hideHover() {
     if (this._tip) this._tip.style.display = 'none';
     if (this._hoverLine) this._hoverLine.setAttribute('opacity', 0);
+    if (this._hoverDots) this._hoverDots.innerHTML = '';
   }
+}
+
+// ------------------------------------------------------------------ helpers
+
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+function pad(arr) {
+  return [arr[0], ...arr, arr[arr.length - 1]];
 }
 
 function sumOf(arr) {
   let s = 0;
   for (const v of arr) s += v;
   return s;
+}
+
+function niceCeil(v) {
+  const steps = [0.5, 1, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50];
+  for (const s of steps) if (v <= s) return s;
+  return Math.ceil(v / 10) * 10;
+}
+
+function fmtNum(v) {
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
 // Index ranges where the half-thickness is visible, widened by one point each
@@ -425,7 +572,7 @@ function runs(half, minPx) {
   return out;
 }
 
-// Monotone-ish smoothing: Catmull-Rom -> cubic Bézier, clamped so curves never overshoot between points.
+// Catmull-Rom -> cubic Bézier, clamped so curves never overshoot between points.
 function smoothPath(xs, ys, continueLine = false) {
   let p = `${continueLine ? 'L' : 'M'} ${xs[0].toFixed(1)} ${ys[0].toFixed(1)}`;
   for (let i = 0; i < xs.length - 1; i++) {
@@ -447,7 +594,7 @@ if (!customElements.get('power-ribbons-card')) {
   window.customCards.push({
     type: 'power-ribbons-card',
     name: 'Power Ribbons Card',
-    description: 'One ribbon per power source over today, coloured by where the power went.',
+    description: 'Where power came from and went today: centred ribbons per source, with a tab per source.',
     preview: false,
   });
   console.info(`%c POWER-RIBBONS-CARD %c ${VERSION} `, 'color:#fff;background:#fb8c00;font-weight:600', 'color:#fb8c00;background:#fff');
