@@ -13,7 +13,7 @@
  * MIT licence. https://github.com/spencermccarthy/power-ribbons-card
  */
 
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 
 const DEFAULT_COLOURS = {
   house: '#fb8c00',
@@ -158,6 +158,7 @@ class PowerRibbonsCard extends HTMLElement {
         .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; background: var(--c); vertical-align: -1px; }
         .legend i.line { height: 3px; border-radius: 2px; vertical-align: 2px; }
         .legend i.none { display: none; }
+        .legend i.dot { height: 0; width: 14px; border-top: 2px dotted var(--c); background: none; border-radius: 0; vertical-align: 3px; opacity: .6; }
         .legend b { color: var(--primary-text-color); font-weight: 600; }
         .legend i.dash { height: 0; width: 14px; border-top: 2px dashed var(--c); background: none; border-radius: 0; vertical-align: 3px; }
         .tip { position: absolute; top: 4px; pointer-events: none; z-index: 2; display: none;
@@ -263,6 +264,7 @@ class PowerRibbonsCard extends HTMLElement {
     chip('', m.actualColor, `Actual <b>${k(m.actualSoFar)}</b>${fc ? ` vs ${k(m.forecastSoFar)} ${fc.kind === 'solar' ? 'forecast' : 'planned'} so far${pct}` : ''}`);
     if (fc && fc.kind === 'solar' && fc.raw !== null && fc.calibrated) chip('dash', 'var(--prc-muted)', `Before calibration ${k(fc.raw)}`);
     if (fc && fc.kind === 'plan' && m.latestRest !== null) chip('dash', m.color, `Latest plan, rest of today <b>${k(m.latestRest)}</b>`);
+    if (fc) chip('dot', 'var(--primary-text-color)', 'Forecast below the line, rest of today');
   }
 
   _renderSummary() {
@@ -669,9 +671,12 @@ class PowerRibbonsCard extends HTMLElement {
     let up = 0.5;
     for (const p of per) for (const v of [p.actual, p.f, p.f90, p.raw, p.latest]) if (v !== null && v > up) up = v;
     const upMax = niceCeil(up * 1.08);
+    // the forecast that matters for the rest of today: solar = the forecast line, others = latest plan
+    const futureVal = (p) => (m.fc?.kind === 'solar' ? p.f : (p.latest ?? p.f));
     let low = 0.25;
     for (const p of per) {
-      const a = Object.values(p.dest).reduce((x, v) => x + v, 0) + Object.values(p.fdest).reduce((x, v) => x + v, 0);
+      let a = Object.values(p.dest).reduce((x, v) => x + v, 0);
+      if (p.t + m.P > d.end) a = Math.max(a, futureVal(p) || 0);
       if (a > low) low = a;
     }
     const lowMax = Math.max(low * 1.08, upMax * 0.25);
@@ -728,14 +733,15 @@ class PowerRibbonsCard extends HTMLElement {
         el('rect', { x: bx(p), y: YD(acc), width: bw, height: Math.max(0.5, YD(acc + v) - YD(acc)), rx: 1.5, fill: this._destinations[l.to].color, 'fill-opacity': 0.85 }, svg);
         acc += v;
       }
-      for (const l of s.layers) {
-        const v = p.fdest[l.to] || 0;
-        if (v <= 0.005) continue;
-        const colour = this._destinations[l.to].color;
-        el('rect', { x: bx(p) + 0.5, y: YD(acc) + 0.5, width: Math.max(0.5, bw - 1), height: Math.max(0.5, YD(acc + v) - YD(acc) - 1), rx: 1.5,
-          fill: colour, 'fill-opacity': 0.2, stroke: colour, 'stroke-width': 1, 'stroke-dasharray': '2 2' }, svg);
-        acc += v;
-      }
+    }
+
+    // forecast total for the rest of today, mirrored below the axis as a dotted line
+    const ahead = per.filter((p) => p.t + m.P > d.end && futureVal(p) !== null);
+    if (ahead.length > 1) {
+      const xs = [f.x(d.end), ...ahead.slice(1).map(mid)];
+      const ys = [YD(futureVal(ahead[0])), ...ahead.slice(1).map((p) => YD(futureVal(p)))];
+      el('path', { d: smoothPath(xs, ys), fill: 'none', stroke: 'var(--primary-text-color)', 'stroke-width': 2,
+        'stroke-dasharray': '0.1 4', 'stroke-linecap': 'round', opacity: 0.6 }, svg);
     }
 
     // forecast line with fading fill
@@ -836,13 +842,11 @@ class PowerRibbonsCard extends HTMLElement {
       if (solar && p.raw !== null) rows.push(`<div class="row sub"><span>Before calibration</span><span>${kw(p.raw)}</span></div>`);
       if (!solar && p.latest !== null) rows.push(`<div class="row sub"><span>Latest plan</span><span>${kw(p.latest)}</span></div>`);
       if (p.actual !== null) rows.push(`<div class="row"><span><i style="--c:${m.actualColor}"></i>Actual${p.t + m.P > d.end ? ' so far' : ''}</span><b>${kw(p.actual)}</b></div>`);
-      const hasA = Object.keys(p.dest).length > 0, hasF = Object.values(p.fdest).some((v) => v > 0.005);
-      if (hasA || hasF) {
-        rows.push(`<div class="sep"></div><div class="row"><span>Went to (${hasA && hasF ? 'actual + forecast' : hasF ? 'forecast' : 'actual'})</span></div>`);
+      if (Object.keys(p.dest).length) {
+        rows.push(`<div class="sep"></div><div class="row"><span>Went to</span></div>`);
         for (const l of s.layers) {
           const dd = this._destinations[l.to];
-          const v = (p.dest[l.to] || 0) + (p.fdest[l.to] || 0);
-          rows.push(`<div class="row sub"><span><i style="--c:${dd.color}"></i>${escapeHtml(dd.name)}</span><span>${kw(v)}</span></div>`);
+          rows.push(`<div class="row sub"><span><i style="--c:${dd.color}"></i>${escapeHtml(dd.name)}</span><span>${kw(p.dest[l.to] || 0)}</span></div>`);
         }
       }
     }
