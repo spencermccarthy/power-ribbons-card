@@ -13,7 +13,7 @@
  * MIT licence. https://github.com/spencermccarthy/power-ribbons-card
  */
 
-const VERSION = '0.5.5';
+const VERSION = '0.6.0';
 
 const DEFAULT_COLOURS = {
   house: '#fb8c00',
@@ -62,6 +62,7 @@ class PowerRibbonsCard extends HTMLElement {
       label_width: 64,
       tabs: true,
       detail_height: 300,
+      max_days_back: 14,
       ...config,
     };
     this._destinations = this._buildDestinations(config);
@@ -78,14 +79,49 @@ class PowerRibbonsCard extends HTMLElement {
     this._data = null;
     this._error = null;
     this._lastFetch = 0;
+    this._offset = 0;
+    this._dayCache = {};
     this._uid = Math.random().toString(36).slice(2, 8);
     this._buildShell();
   }
 
   set hass(hass) {
     this._hass = hass;
+    // past days don't change; only today refreshes
     const due = Date.now() - this._lastFetch > this._config.refresh_minutes * 60000;
-    if (due && !this._fetching) this._fetch();
+    if (due && !this._fetching && (!this._offset || !this._data)) this._fetch();
+  }
+
+  _dayStart(offset) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + offset);
+    return d.getTime();
+  }
+
+  _go(delta) {
+    const next = Math.min(0, Math.max(-this._config.max_days_back, (this._offset || 0) + delta));
+    if (next === this._offset) return;
+    this._offset = next;
+    this._hideHover();
+    this._fetch();
+  }
+
+  _renderNav() {
+    if (!this._navDay) return;
+    const off = this._offset || 0;
+    const d = new Date(this._dayStart(off));
+    const label = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+    this._navDay.textContent = off === 0 ? `Today, ${label}` : off === -1 ? `Yesterday, ${label}` : label;
+    this._navPrev.disabled = off <= -this._config.max_days_back;
+    this._navNext.disabled = off >= 0;
+    const cost = this._data?.cost || {};
+    const parts = [];
+    const p = (v) => `${v.toFixed(1)}p`;
+    if (cost.ppkwh !== null && cost.ppkwh !== undefined) parts.push(`<b>${p(cost.ppkwh)}</b> per kWh used`);
+    if (cost.importPpkwh !== null && cost.importPpkwh !== undefined) parts.push(`<b>${p(cost.importPpkwh)}</b> avg import`);
+    if (cost.total !== null && cost.total !== undefined) parts.push(`<b>£${(cost.total / 100).toFixed(2)}</b>${off === 0 ? ' so far' : ''}`);
+    this._navCost.innerHTML = parts.join(' · ');
   }
 
   getCardSize() {
@@ -133,6 +169,13 @@ class PowerRibbonsCard extends HTMLElement {
                 --prc-line: color-mix(in srgb, var(--primary-text-color, #000) 12%, transparent);
                 --prc-tile: color-mix(in srgb, var(--primary-text-color, #000) 4%, transparent); }
         ha-card { padding: 14px 16px 12px; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+        .nav { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; color: var(--prc-muted); font-variant-numeric: tabular-nums; }
+        .nav button { border: 1px solid var(--prc-line); background: var(--prc-tile); color: var(--primary-text-color); font: inherit;
+                      font-size: 16px; line-height: 1; width: 28px; height: 26px; border-radius: 999px; cursor: pointer; padding: 0; }
+        .nav button:disabled { opacity: .35; cursor: default; }
+        .nav .day { font-weight: 600; color: var(--primary-text-color); min-width: 120px; text-align: center; }
+        .nav .cost { margin-left: auto; }
+        .nav .cost b { color: var(--primary-text-color); font-weight: 650; }
         .head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; }
         .ttl { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--prc-muted); }
         .tabs { display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px; background: var(--prc-tile);
@@ -173,6 +216,12 @@ class PowerRibbonsCard extends HTMLElement {
       </style>
       <ha-card>
         <div class="head"><div class="ttl"></div><div class="tabs" role="tablist"></div></div>
+        <div class="nav">
+          <button class="prev" aria-label="Previous day">‹</button>
+          <span class="day"></span>
+          <button class="next" aria-label="Next day">›</button>
+          <span class="cost"></span>
+        </div>
         <div class="summary"></div>
         <div class="plot">
           <svg></svg>
@@ -190,6 +239,13 @@ class PowerRibbonsCard extends HTMLElement {
     this._msg = $('.msg');
     this._tip = $('.tip');
     this._legend = $('.legend');
+    this._navPrev = $('.nav .prev');
+    this._navNext = $('.nav .next');
+    this._navDay = $('.nav .day');
+    this._navCost = $('.nav .cost');
+    this._navPrev.addEventListener('click', () => this._go(-1));
+    this._navNext.addEventListener('click', () => this._go(1));
+    if (!c.day_navigation && c.day_navigation !== undefined) $('.nav').style.display = 'none';
 
     const tabs = c.tabs ? [['all', c.all_label || 'All'], ...c.sources.map((s) => [s.name, s.name])] : [];
     this._tabsEl.style.display = tabs.length ? '' : 'none';
@@ -225,6 +281,7 @@ class PowerRibbonsCard extends HTMLElement {
       b.classList.toggle('on', on);
       b.setAttribute('aria-selected', on);
     }
+    this._renderNav();
     this._renderLegend();
     this._renderSummary();
     this._draw();
@@ -262,12 +319,12 @@ class PowerRibbonsCard extends HTMLElement {
     if (fc && fc.kind === 'solar') {
       chip('line', m.color, `Forecast <b>${k(fc.total)}</b>`);
       if (fc.total10 !== null && fc.total90 !== null) chip('', `color-mix(in srgb, ${m.color} 35%, transparent)`, `10–90% <b>${k(fc.total10)}–${k(fc.total90)}</b>`);
-      if (fc.left !== null) chip('none', 'transparent', `Left today <b>${k(fc.left)}</b>${fc.left10 !== null && fc.left90 !== null ? ` (${fc.left10.toFixed(1)}–${fc.left90.toFixed(1)})` : ''}`);
+      if (fc.left !== null && !this._data?.offset) chip('none', 'transparent', `Left today <b>${k(fc.left)}</b>${fc.left10 !== null && fc.left90 !== null ? ` (${fc.left10.toFixed(1)}–${fc.left90.toFixed(1)})` : ''}`);
     } else if (fc) {
       chip('line', m.color, `Start-of-day estimate <b>${k(fc.total)}</b>`);
     }
     const pct = m.forecastSoFar > 0.05 ? ` (${Math.round((m.actualSoFar / m.forecastSoFar) * 100)}%)` : '';
-    chip('', m.actualColor, `Actual <b>${k(m.actualSoFar)}</b>${fc ? ` vs ${k(m.forecastSoFar)} ${fc.kind === 'solar' ? 'forecast' : 'estimated'} so far${pct}` : ''}`);
+    chip('', m.actualColor, `Actual <b>${k(m.actualSoFar)}</b>${fc ? ` vs ${k(m.forecastSoFar)} ${fc.kind === 'solar' ? 'forecast' : 'estimated'}${this._data?.offset ? '' : ' so far'}${pct}` : ''}`);
     if (fc && fc.kind === 'solar' && fc.raw !== null && fc.calibrated) chip('dash', 'var(--prc-muted)', `Before calibration ${k(fc.raw)}`);
     if (fc && fc.kind === 'plan' && m.latestRest !== null) chip('dash', m.color, `Latest plan, rest of today <b>${k(m.latestRest)}</b>`);
     if (fc) chip('dot', m.color, 'Forecast mirrored below the line');
@@ -290,7 +347,8 @@ class PowerRibbonsCard extends HTMLElement {
     const m = this._sourceModel(s);
     const withPlan = m && m.hasPlanDest;
     const head = document.createElement('span');
-    head.textContent = withPlan ? 'Where it went so far vs the start-of-day estimate (kWh):' : 'Where it went so far (kWh):';
+    const sf = this._data.offset ? '' : ' so far';
+    head.textContent = withPlan ? `Where it went${sf} vs the start-of-day estimate (kWh):` : `Where it went${sf} (kWh):`;
     el.appendChild(head);
     for (const l of s.layers) {
       const d = this._destinations[l.to];
@@ -298,7 +356,9 @@ class PowerRibbonsCard extends HTMLElement {
       c.className = 'chip';
       c.style.setProperty('--c', d.color);
       const plan = withPlan
-        ? ` <span>vs ${fmt(m.planDestSoFar[l.to] || 0)} · day ${fmt(m.planDestDay[l.to] || 0)}</span>`
+        ? (this._data.offset
+          ? ` <span>vs ${fmt(m.planDestDay[l.to] || 0)}</span>`
+          : ` <span>vs ${fmt(m.planDestSoFar[l.to] || 0)} · day ${fmt(m.planDestDay[l.to] || 0)}</span>`)
         : '';
       c.innerHTML = `<i></i>${escapeHtml(d.name)} <b>${fmt(kwh(l.values))}</b>${plan}`;
       el.appendChild(c);
@@ -318,12 +378,20 @@ class PowerRibbonsCard extends HTMLElement {
     if (!this._hass) return;
     this._fetching = true;
     this._lastFetch = Date.now();
+    const offset = this._offset || 0;
     try {
       const c = this._config;
       const bin = c.bin_minutes * 60000;
-      const day = new Date(); day.setHours(0, 0, 0, 0);
-      const start = day.getTime();
-      const end = Date.now();
+      const start = this._dayStart(offset);
+      const end = offset === 0 ? Date.now() : this._dayStart(offset + 1);
+      const cached = offset !== 0 ? this._dayCache[start] : null;
+      if (cached) {
+        this._data = cached.data;
+        this._startPlan = cached.startPlan;
+        this._startPlanDay = start;
+        this._error = null;
+        return;
+      }
       const nb = Math.max(1, Math.ceil((end - start) / bin));
       const ids = [];
       for (const s of c.sources) for (const f of s.flows) if (!ids.includes(f.entity)) ids.push(f.entity);
@@ -362,14 +430,68 @@ class PowerRibbonsCard extends HTMLElement {
         const total = times.map((_, i) => layers.reduce((acc, l) => acc + l.values[i], 0));
         return { name: s.name, layers, total };
       });
-      this._data = { start, end, times, sources };
+      const data = { start, end, times, sources, offset, cost: {}, solarDetail: null };
       if (c.forecast && this._startPlanDay !== start) await this._fetchStartPlan(start);
+      await this._fetchDayExtras(data);
+      if ((this._offset || 0) !== offset) return; // user moved on while this loaded
+      this._data = data;
+      if (offset !== 0) this._dayCache[start] = { data, startPlan: this._startPlan };
       this._error = null;
     } catch (err) {
       this._error = (err && (err.message || err.body?.message)) || String(err);
     } finally {
       this._fetching = false;
       this._render();
+    }
+  }
+
+  // Day cost figures (today: live; past days: last value before midnight) and, for past
+  // days, the solar detail forecast as it stood at the end of that day.
+  async _fetchDayExtras(data) {
+    const c = this._config;
+    const cc = c.cost || {};
+    const ids = { ppkwh: cc.per_kwh, importPpkwh: cc.import_per_kwh, total: cc.total };
+    const scale = (id, v) => {
+      const unit = this._hass?.states?.[id]?.attributes?.unit_of_measurement || '';
+      return /GBP|EUR|USD|£|€|\$/.test(unit) ? v * 100 : v; // currency per kWh -> pence
+    };
+    const num = (v) => { const x = parseFloat(v); return isFinite(x) ? x : null; };
+    const wanted = Object.entries(ids).filter(([, id]) => id);
+    if (data.offset === 0) {
+      for (const [k, id] of wanted) {
+        const v = num(this._hass?.states?.[id]?.state);
+        data.cost[k] = v === null ? null : scale(id, v);
+      }
+    } else if (wanted.length) {
+      try {
+        const list = wanted.map(([, id]) => id);
+        const hist = await this._hass.callApi('GET', `history/period/${new Date(data.start).toISOString()}`
+          + `?filter_entity_id=${encodeURIComponent(list.join(','))}`
+          + `&end_time=${encodeURIComponent(new Date(data.end - 1000).toISOString())}&minimal_response&no_attributes`);
+        for (const rows of hist || []) {
+          if (!rows || !rows.length) continue;
+          const id = rows[0].entity_id;
+          let last = null;
+          for (const r of rows) {
+            const t = new Date(r.last_changed || r.lu * 1000).getTime();
+            const v = num(r.state);
+            if (v !== null && t < data.end) last = v;
+          }
+          for (const [k, i2] of wanted) if (i2 === id) data.cost[k] = last === null ? null : scale(id, last);
+        }
+      } catch (e) { /* costs are optional */ }
+    }
+    const detailId = c.forecast?.solar_detail;
+    if (data.offset !== 0 && detailId) {
+      try {
+        const hist = await this._hass.callApi('GET', `history/period/${new Date(data.end - 45 * 60000).toISOString()}`
+          + `?filter_entity_id=${encodeURIComponent(detailId)}`
+          + `&end_time=${encodeURIComponent(new Date(data.end - 1000).toISOString())}&significant_changes_only=0`);
+        const rows = (hist && hist[0]) || [];
+        let pick = null;
+        for (const r of rows) if (r.attributes && (r.attributes.detailedForecast || r.attributes.detailed_forecast)) pick = r;
+        if (pick) data.solarDetail = { state: pick.state, attributes: pick.attributes, last_updated: pick.last_updated };
+      } catch (e) { /* optional */ }
     }
   }
 
@@ -480,8 +602,10 @@ class PowerRibbonsCard extends HTMLElement {
     if (this._tab === 'all') this._drawAll(f);
     else this._drawSource(f, this._source());
 
-    const nx = f.x(this._data.end);
-    el('line', { x1: nx, x2: nx, y1: f.padT, y2: f.bottom, stroke: 'var(--primary-color, #03a9f4)', 'stroke-width': 1.5, 'stroke-dasharray': '4 3' }, svg);
+    if (!this._data.offset) {
+      const nx = f.x(this._data.end);
+      el('line', { x1: nx, x2: nx, y1: f.padT, y2: f.bottom, stroke: 'var(--primary-color, #03a9f4)', 'stroke-width': 1.5, 'stroke-dasharray': '4 3' }, svg);
+    }
     this._hoverLine = el('line', { x1: 0, x2: 0, y1: f.padT, y2: f.bottom, class: 'grid', 'stroke-width': 1, opacity: 0, 'pointer-events': 'none', style: 'stroke: var(--primary-text-color)' }, svg);
     this._hoverDots = el('g', { 'pointer-events': 'none' }, svg);
   }
@@ -573,9 +697,9 @@ class PowerRibbonsCard extends HTMLElement {
     const info = this._sourceInfo[s.name] || {};
     const role = info.role;
     const detailId = role === 'solar' ? fcCfg.solar_detail : null;
-    const detailSt = detailId ? this._hass?.states?.[detailId] : null;
-    const latestSt = role && fcCfg[role] ? this._hass?.states?.[fcCfg[role]] : null;
-    const key = [s.name, d.end, this._startPlanDay, detailSt?.last_updated, latestSt?.last_updated].join('|');
+    const detailSt = detailId ? (d.offset ? d.solarDetail : this._hass?.states?.[detailId]) : null;
+    const latestSt = !d.offset && role && fcCfg[role] ? this._hass?.states?.[fcCfg[role]] : null;
+    const key = [s.name, d.start, d.end, this._startPlanDay, detailSt?.last_updated, latestSt?.last_updated].join('|');
     if (this._modelCache?.key === key) return this._modelCache.m;
 
     const P = (c.period_minutes || 30) * 60000;
@@ -634,7 +758,7 @@ class PowerRibbonsCard extends HTMLElement {
     }
 
     // latest plan: rest of today, plus the forecast split by destination
-    const latest = c.forecast ? this._latestPlan() : null;
+    const latest = c.forecast && !d.offset ? this._latestPlan() : null;
     let latestRest = null;
     const canSplit = role && latest && latest.solar && latest.grid && latest.battery;
     for (const p of per) {
@@ -806,7 +930,8 @@ class PowerRibbonsCard extends HTMLElement {
     // axis line
     el('line', { x1: f.padL, x2: f.W - f.padR, y1: axisY, y2: axisY, stroke: 'var(--prc-muted)', 'stroke-width': 1, opacity: 0.6 }, svg);
 
-    // "Now" label and the forecast value at now
+    // "Now" label and the forecast value at now (today only)
+    if (d.offset) return;
     const nx = f.x(d.end);
     const nl = el('text', { x: nx + 4, y: f.padT + 10, class: 'axis' }, svg);
     nl.textContent = 'Now';

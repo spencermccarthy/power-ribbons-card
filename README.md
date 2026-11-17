@@ -12,7 +12,7 @@ There are two layouts:
 - **`overlap`** (default): each destination gets its own ribbon, centred on the source's line, as thick as the power that went there. Fills are see-through with a solid outline, so you can see one ribbon through another and a big battery charge doesn't push the others outwards.
 - **`stack`**: a source's destinations are stacked into one solid ribbon, so its total thickness is everything that source supplied.
 
-All the ribbons share one timeline, from midnight to now, and they all use the same scale, so you can compare thicknesses directly. Hover over (or tap) the chart to see the breakdown for any 10-minute block.
+All the ribbons share one timeline, from midnight to now, and they all use the same scale, so you can compare thicknesses directly. Use the **‹ ›** buttons to step back through previous days (the plan and solar forecast for that day are read back from HA history), with that day's cost per kWh, average import price and total cost if `cost` is set. Hover over (or tap) the chart to see the breakdown for any 10-minute block.
 
 Tabs across the top (**All**, then one per source) switch to a detail view for a single source, styled after the Predbat Card solar chart:
 
@@ -88,6 +88,9 @@ sources:
 | `fill_opacity` | `0.35` | Strongest fill opacity, which fades towards the edges |
 | `stroke_width` | `2` | Outline width in `overlap` mode |
 | `opacity` | `0.85` | Fill opacity in `stack` mode |
+| `max_days_back` | `14` | How far back the ‹ › day buttons go (needs that much recorder history) |
+| `day_navigation` | `true` | Shows the day buttons and cost line |
+| `cost` | none | `per_kwh`, `import_per_kwh`, `total`: entities shown on the day line (currency per kWh is converted to pence) |
 | `max_kw` | auto | Fixes the scale. By default it scales to the biggest ribbon today |
 | `min_scale_kw` | `1` | Smallest scale to use when auto-scaling, so quiet days don't look huge |
 | `label_width` | `64` | Width in px of the space on the left for source names |
