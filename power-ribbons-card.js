@@ -9,7 +9,7 @@
  * MIT licence. https://github.com/spencermccarthy/power-ribbons-card
  */
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 const DEFAULT_COLOURS = {
   house: '#fb8c00',
@@ -53,7 +53,10 @@ class PowerRibbonsCard extends HTMLElement {
       bin_minutes: 10,
       height: 200,
       refresh_minutes: 5,
+      mode: 'overlap',
       opacity: 0.85,
+      fill_opacity: 0.22,
+      stroke_width: 1.5,
       min_scale_kw: 1,
       label_width: 64,
       ...config,
@@ -148,7 +151,9 @@ class PowerRibbonsCard extends HTMLElement {
 
     const legend = this.shadowRoot.querySelector('.legend');
     const intro = document.createElement('span');
-    intro.textContent = c.legend_text ?? 'Thickness = how much each source supplied. Colour = where it went:';
+    intro.textContent = c.legend_text ?? (c.mode === 'stack'
+      ? 'Thickness = how much each source supplied. Colour = where it went:'
+      : 'Each colour is where that source\'s power went; thickness = how much:');
     legend.appendChild(intro);
     for (const d of Object.values(this._destinations)) {
       const s = document.createElement('span');
@@ -247,7 +252,10 @@ class PowerRibbonsCard extends HTMLElement {
     let maxKw = c.max_kw || 0;
     if (!maxKw) {
       maxKw = c.min_scale_kw;
-      for (const s of d.sources) for (const v of s.total) if (v > maxKw) maxKw = v;
+      for (const s of d.sources) {
+        const arrays = c.mode === 'stack' ? [s.total] : s.layers.map((l) => l.values);
+        for (const arr of arrays) for (const v of arr) if (v > maxKw) maxKw = v;
+      }
     }
     const pxPerKw = (rowH * 0.92) / maxKw;
     const x = (t) => padL + ((t - d.start) / DAY) * (W - padL - padR);
@@ -299,14 +307,33 @@ class PowerRibbonsCard extends HTMLElement {
       const label = el('text', { x: g.padL - 10, y: cy, 'text-anchor': 'end', 'dominant-baseline': 'central', 'font-size': 12, 'font-weight': 600, fill: 'var(--secondary-text-color)' });
       label.textContent = s.name;
 
-      // cumulative edges, top to bottom, centred on cy
-      let edge = pad(s.total.map((t) => cy - (t * g.pxPerKw) / 2));
-      for (const layer of s.layers) {
-        const vals = pad(layer.values.map((v) => v * g.pxPerKw));
-        const next = edge.map((y, k) => y + vals[k]);
-        const path = smoothPath(xs, edge) + ' ' + smoothPath(xs.slice().reverse(), next.slice().reverse(), true) + ' Z';
-        el('path', { d: path, fill: this._destinations[layer.to].color, 'fill-opacity': this._config.opacity, stroke: 'none' });
-        edge = next;
+      if (this._config.mode === 'stack') {
+        // cumulative edges, top to bottom, centred on cy
+        let edge = pad(s.total.map((t) => cy - (t * g.pxPerKw) / 2));
+        for (const layer of s.layers) {
+          const vals = pad(layer.values.map((v) => v * g.pxPerKw));
+          const next = edge.map((y, k) => y + vals[k]);
+          const path = smoothPath(xs, edge) + ' ' + smoothPath(xs.slice().reverse(), next.slice().reverse(), true) + ' Z';
+          el('path', { d: path, fill: this._destinations[layer.to].color, 'fill-opacity': this._config.opacity, stroke: 'none' });
+          edge = next;
+        }
+      } else {
+        // overlap: every destination is its own ribbon centred on cy; biggest drawn first
+        const order = s.layers.slice().sort((a, b) => sumOf(b.values) - sumOf(a.values));
+        for (const layer of order) {
+          const half = pad(layer.values.map((v) => (v * g.pxPerKw) / 2));
+          const colour = this._destinations[layer.to].color;
+          for (const [a, b] of runs(half, 0.4)) {
+            const sx = xs.slice(a, b + 1);
+            const top = half.slice(a, b + 1).map((h) => cy - h);
+            const bot = half.slice(a, b + 1).map((h) => cy + h);
+            const path = smoothPath(sx, top) + ' ' + smoothPath(sx.slice().reverse(), bot.slice().reverse(), true) + ' Z';
+            el('path', {
+              d: path, fill: colour, 'fill-opacity': this._config.fill_opacity,
+              stroke: colour, 'stroke-width': this._config.stroke_width, 'stroke-opacity': 0.95, 'stroke-linejoin': 'round',
+            });
+          }
+        }
       }
     });
 
@@ -373,6 +400,29 @@ class PowerRibbonsCard extends HTMLElement {
     if (this._tip) this._tip.style.display = 'none';
     if (this._hoverLine) this._hoverLine.setAttribute('opacity', 0);
   }
+}
+
+function sumOf(arr) {
+  let s = 0;
+  for (const v of arr) s += v;
+  return s;
+}
+
+// Index ranges where the half-thickness is visible, widened by one point each
+// side so a ribbon tapers to the centre line rather than starting with a cliff.
+function runs(half, minPx) {
+  const out = [];
+  let a = -1;
+  for (let i = 0; i < half.length; i++) {
+    if (half[i] >= minPx) {
+      if (a < 0) a = Math.max(0, i - 1);
+    } else if (a >= 0) {
+      out.push([a, i]);
+      a = -1;
+    }
+  }
+  if (a >= 0) out.push([a, half.length - 1]);
+  return out;
 }
 
 // Monotone-ish smoothing: Catmull-Rom -> cubic Bézier, clamped so curves never overshoot between points.
