@@ -16,8 +16,8 @@ All the ribbons share one timeline, from midnight to now, and they all use the s
 
 Tabs across the top (**All**, then one per source) switch to a detail view for a single source, styled after the Predbat Card solar chart:
 
-- **Above the axis:** the **forecast** as a smooth line with a fading fill, and the **actual** as bars (average kW per 30 minutes). Earlier parts of the day are lightly shaded, and  is marked along with the forecast value at that moment.
-  - **Solar** uses a Solcast-style detailed forecast (, e.g. Predbat's ): the calibrated forecast, the 10–90% band, and the forecast *before calibration* as a dashed line.
+- **Above the axis:** the **forecast** as a smooth line with a fading fill, and the **actual** as bars (average kW per 30 minutes). Earlier parts of the day are lightly shaded, and **Now** is marked along with the forecast value at that moment.
+  - **Solar** uses a Solcast-style detailed forecast (`forecast.solar_detail`, e.g. Predbat's `sensor.predbat_pv_today`): the calibrated forecast, the 10–90% band, and the forecast *before calibration* as a dashed line.
   - **Grid / Battery** use the **plan as it stood at 00:00** (read back from HA history), plus the **latest plan** for the rest of today as a dashed line.
 - **Below the axis:** the same bars mirrored downwards, split by **where the power went**, on the same kW scale. After now, dashed faded bars show the forecast split.
 - **Legend:** forecast total, actual vs forecast so far (%), what's left today, and what has gone to each destination so far.
