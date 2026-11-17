@@ -13,7 +13,7 @@
  * MIT licence. https://github.com/spencermccarthy/power-ribbons-card
  */
 
-const VERSION = '0.5.3';
+const VERSION = '0.5.4';
 
 const DEFAULT_COLOURS = {
   house: '#fb8c00',
@@ -287,15 +287,20 @@ class PowerRibbonsCard extends HTMLElement {
     }
     const s = this._source();
     if (!s) return;
+    const m = this._sourceModel(s);
+    const withPlan = m && m.hasPlanDest;
     const head = document.createElement('span');
-    head.textContent = 'Where it went so far (kWh):';
+    head.textContent = withPlan ? 'Where it went so far vs the 00:00 plan (kWh):' : 'Where it went so far (kWh):';
     el.appendChild(head);
     for (const l of s.layers) {
       const d = this._destinations[l.to];
       const c = document.createElement('span');
       c.className = 'chip';
       c.style.setProperty('--c', d.color);
-      c.innerHTML = `<i></i>${escapeHtml(d.name)} <b>${fmt(kwh(l.values))}</b>`;
+      const plan = withPlan
+        ? ` <span>vs ${fmt(m.planDestSoFar[l.to] || 0)} · day ${fmt(m.planDestDay[l.to] || 0)}</span>`
+        : '';
+      c.innerHTML = `<i></i>${escapeHtml(d.name)} <b>${fmt(kwh(l.values))}</b>${plan}`;
       el.appendChild(c);
     }
   }
@@ -653,6 +658,33 @@ class PowerRibbonsCard extends HTMLElement {
       if (scnt) for (const l of s.layers) p.fdest[l.to] = (split[l.to] || 0) / scnt;
     }
 
+    // what each destination was expected to take, from the 00:00 plan (same split rules as the forecast)
+    const sp0 = this._startPlan;
+    const planDestSoFar = {}, planDestDay = {};
+    let hasPlanDest = false;
+    if (role && sp0 && sp0.solar && sp0.grid && sp0.battery) {
+      for (const p of per) {
+        const acc = {};
+        let cnt = 0;
+        for (let t = p.t; t < p.t + P; t += SLOT) {
+          const sp = this._splitAt(sp0, t + SLOT / 2);
+          if (!sp || !sp[role]) continue;
+          cnt++;
+          for (const l of s.layers) acc[l.to] = (acc[l.to] || 0) + (sp[role][l.to] || 0);
+        }
+        if (!cnt) continue;
+        hasPlanDest = true;
+        p.pdest = {};
+        const overlap = Math.max(0, Math.min(p.t + P, d.end) - p.t);
+        for (const l of s.layers) {
+          const v = (acc[l.to] || 0) / cnt;
+          p.pdest[l.to] = v;
+          planDestDay[l.to] = (planDestDay[l.to] || 0) + v * (P / HOUR);
+          planDestSoFar[l.to] = (planDestSoFar[l.to] || 0) + v * (overlap / HOUR);
+        }
+      }
+    }
+
     const hours = c.bin_minutes / 60;
     const actualSoFar = s.total.reduce((a, v) => a + v, 0) * hours;
     let forecastSoFar = 0;
@@ -662,6 +694,7 @@ class PowerRibbonsCard extends HTMLElement {
       forecastSoFar += p.f * (overlap / HOUR);
     }
     const m = { role, P, per, fc, latestRest, actualSoFar, forecastSoFar, color: info.color,
+      hasPlanDest, planDestSoFar, planDestDay,
       actualColor: c.actual_color || 'color-mix(in srgb, var(--primary-text-color) 38%, transparent)' };
     this._modelCache = { key, m };
     return m;
@@ -849,11 +882,15 @@ class PowerRibbonsCard extends HTMLElement {
       if (solar && p.raw !== null) rows.push(`<div class="row sub"><span>Before calibration</span><span>${kw(p.raw)}</span></div>`);
       if (!solar && p.latest !== null) rows.push(`<div class="row sub"><span>Latest plan</span><span>${kw(p.latest)}</span></div>`);
       if (p.actual !== null) rows.push(`<div class="row"><span><i style="--c:${m.actualColor}"></i>Actual${p.t + m.P > d.end ? ' so far' : ''}</span><b>${kw(p.actual)}</b></div>`);
-      if (Object.keys(p.dest).length) {
-        rows.push(`<div class="sep"></div><div class="row"><span>Went to</span></div>`);
+      const hasAct = Object.keys(p.dest).length > 0;
+      if (hasAct || p.pdest) {
+        rows.push(`<div class="sep"></div><div class="row"><span>${hasAct ? 'Went to' : 'Planned to go to'}</span>${hasAct && p.pdest ? '<span>actual · plan</span>' : ''}</div>`);
         for (const l of s.layers) {
           const dd = this._destinations[l.to];
-          rows.push(`<div class="row sub"><span><i style="--c:${dd.color}"></i>${escapeHtml(dd.name)}</span><span>${kw(p.dest[l.to] || 0)}</span></div>`);
+          const a = hasAct ? kw(p.dest[l.to] || 0) : '';
+          const pl = p.pdest ? kw(p.pdest[l.to] || 0) : '';
+          const val = hasAct && p.pdest ? `${a} · ${pl}` : (a || pl);
+          rows.push(`<div class="row sub"><span><i style="--c:${dd.color}"></i>${escapeHtml(dd.name)}</span><span>${val}</span></div>`);
         }
       }
     }
