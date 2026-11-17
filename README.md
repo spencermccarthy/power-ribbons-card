@@ -14,7 +14,23 @@ There are two layouts:
 
 All the ribbons share one timeline, from midnight to now, and they all use the same scale, so you can compare thicknesses directly. Hover over (or tap) the chart to see the breakdown for any 10-minute block.
 
-Tabs across the top (**All**, then one per source) switch to a detail view for a single source. That view has a line for each destination with a fading fill underneath, plus today's kWh totals.
+Tabs across the top (**All**, then one per source) switch to a detail view for a single source:
+
+- **Top:** the source's actual power, as a line with a fading fill.
+- **Optional forecast** (see `forecast` below): the plan as it stood at **00:00** (grey dashed line, read back from HA history) and the **latest plan** for the rest of the day (dashed, in the source's colour). This makes it easy to see how the day differed from the plan.
+- **Bottom:** hourly bars in kWh, coloured by destination. Solid bars are what happened. Dashed bars, after now, are the forecast split.
+- **Summary:** kWh so far, the plan up to now, and the plan for the whole day.
+
+### Forecast (Predbat)
+
+```yaml
+forecast:
+  solar: predbat.pv_power_best        # kW plan in the "results" attribute
+  grid: predbat.grid_power_best       # + import / - export
+  battery: predbat.battery_power_best # + discharge / - charge
+```
+
+A source uses the plan whose key matches its name in lowercase (`Solar`, `Grid`, `Battery`), or whatever you set with `role:`. Predbat doesn't publish where its planned power goes, so the card **estimates** the split by destination from the solar, grid and battery plans. It uses the usual inverter priority: solar goes to the house first, then the battery, then export; battery goes to the house, then export; grid goes to the house, then the battery. That estimate needs all three plans. Any other forecast entity whose attribute holds `{timestamp: kW}` also works (`forecast.attribute`, which defaults to `results`).
 
 No other cards or libraries are needed. The card reads Home Assistant's recorder history directly.
 
@@ -60,6 +76,10 @@ sources:
 | `refresh_minutes` | `5` | How often history is fetched again |
 | `mode` | `overlap` | `overlap` or `stack` (see above) |
 | `tabs` | `true` | Shows the All and per-source tabs |
+| `forecast` | none | Plan entities (see above) |
+| `detail_height` | `300` | Chart height in px on the source tabs |
+| `sources[].color` | by role | Line colour on that source's tab |
+| `sources[].role` | from name | `solar`, `grid` or `battery`, to match the forecast |
 | `all_label` | `All` | Label for the overview tab |
 | `fill_opacity` | `0.35` | Strongest fill opacity, which fades towards the edges |
 | `stroke_width` | `2` | Outline width in `overlap` mode |
